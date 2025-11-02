@@ -152,17 +152,17 @@ impl Config {
     pub fn apply_to_env(&self) {
         if let Some(key) = &self.anthropic_api_key {
             if std::env::var("ANTHROPIC_API_KEY").is_err() {
-                std::env::set_var("ANTHROPIC_API_KEY", key);
+                unsafe { std::env::set_var("ANTHROPIC_API_KEY", key); }
             }
         }
         if let Some(key) = &self.openai_api_key {
             if std::env::var("OPENAI_API_KEY").is_err() {
-                std::env::set_var("OPENAI_API_KEY", key);
+                unsafe { std::env::set_var("OPENAI_API_KEY", key); }
             }
         }
         if let Some(key) = &self.glm_api_key {
             if std::env::var("GLM_API_KEY").is_err() {
-                std::env::set_var("GLM_API_KEY", key);
+                unsafe { std::env::set_var("GLM_API_KEY", key); }
             }
         }
     }
