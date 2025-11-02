@@ -61,7 +61,6 @@ impl McpClient {
                     unix_cmd
                 };
 
-                // Apply custom env vars
                 if let Some(env_vars) = env {
                     cmd.envs(env_vars);
                 }
@@ -82,7 +81,6 @@ impl McpClient {
                 self.stdout = Some(Mutex::new(BufReader::new(stdout)));
                 self.process = Some(Mutex::new(child));
 
-                // Initialize the MCP connection
                 self.initialize().await?;
 
                 Ok(())
@@ -115,7 +113,6 @@ impl McpClient {
         self.capabilities = Some(result.capabilities);
         self.initialized = true;
 
-        // Send initialized notification
         self.send_notification("notifications/initialized", None).await?;
 
         Ok(())
@@ -192,7 +189,6 @@ impl McpClient {
 
         let request_json = serde_json::to_string(&request)?;
 
-        // Send request
         if let Some(stdin) = &self.stdin {
             let mut stdin = stdin.lock().await;
             stdin.write_all(request_json.as_bytes()).await?;
@@ -202,7 +198,6 @@ impl McpClient {
             return Err(anyhow!("STDIN not available"));
         }
 
-        // Read response
         if let Some(stdout) = &self.stdout {
             let mut stdout = stdout.lock().await;
 

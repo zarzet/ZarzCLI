@@ -53,7 +53,7 @@ First run will show the ASCII banner and prompt for API keys:
 ███████╗██║  ██║██║  ██║███████╗╚██████╗███████╗██║
 ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚══════╝╚═╝
 
-🔧 Welcome to ZarzCLI! Let's set up your API keys.
+Welcome to ZarzCLI! Let's set up your API keys.
 ```
 
 ## Verify After Publishing

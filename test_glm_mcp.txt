@@ -1,3 +1,0 @@
-/mcp
-Search the web for "Python FastAPI tutorial 2024" and summarize the top result
-/quit

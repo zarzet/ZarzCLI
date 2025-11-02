@@ -147,7 +147,6 @@ async fn run(cli: Cli) -> Result<()> {
         }
     };
 
-    // Apply config API keys to environment
     config.apply_to_env();
 
     // If message flag is provided, run in ask mode (one-shot)
@@ -220,7 +219,6 @@ async fn handle_quick_ask(
         user_prompt.push_str(&context_section);
     }
 
-    // Get API key from config based on provider
     let api_key = match provider_kind {
         Provider::Anthropic => config.get_anthropic_key(),
         Provider::OpenAi => config.get_openai_key(),
@@ -293,7 +291,6 @@ async fn handle_ask(args: AskArgs, config: &config::Config) -> Result<()> {
         user_prompt.push_str(&context_section);
     }
 
-    // Get API key from config based on provider
     let api_key = match provider_kind {
         Provider::Anthropic => config.get_anthropic_key(),
         Provider::OpenAi => config.get_openai_key(),
@@ -367,7 +364,6 @@ async fn handle_rewrite(args: RewriteArgs, config: &config::Config) -> Result<()
 
     let user_prompt = build_rewrite_prompt(&instructions, &files_with_content);
 
-    // Get API key from config based on provider
     let api_key = match provider_kind {
         Provider::Anthropic => config.get_anthropic_key(),
         Provider::OpenAi => config.get_openai_key(),
@@ -530,7 +526,6 @@ async fn handle_config(args: ConfigArgs) -> Result<()> {
     let ConfigArgs { reset, show } = args;
 
     if show {
-        // Show current configuration
         let config = config::Config::load()?;
         let config_path = config::Config::config_path()?;
 
@@ -556,14 +551,12 @@ async fn handle_config(args: ConfigArgs) -> Result<()> {
     }
 
     if reset {
-        // Reset and run interactive setup
         println!("Resetting configuration...\n");
         let config = config::Config::interactive_setup()?;
         config.apply_to_env();
         return Ok(());
     }
 
-    // Default: run interactive setup
     let config = config::Config::interactive_setup()?;
     config.apply_to_env();
     Ok(())
@@ -583,7 +576,6 @@ async fn handle_mcp(args: McpArgs) -> Result<()> {
         } => {
             let mut config = McpConfig::load()?;
 
-            // Parse environment variables
             let env: Option<HashMap<String, String>> = if !env_vars.is_empty() {
                 let mut env_map = HashMap::new();
                 for var in env_vars {

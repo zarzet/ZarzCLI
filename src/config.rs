@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use dialoguer::Input;
+use crossterm::style::{Color, Stylize};
+use dialoguer::{theme::ColorfulTheme, Select};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,42 +67,59 @@ impl Config {
 
     /// Interactive setup to get API keys from user
     pub fn interactive_setup() -> Result<Self> {
-        println!("\n🔧 Welcome to ZarzCLI! Let's set up your API keys.\n");
-        println!("You can configure one or more providers:");
-        println!("  • Anthropic Claude (recommended for coding)");
-        println!("  • OpenAI GPT");
-        println!("  • GLM (Z.AI - International GLM-4.6)\n");
+        let theme = ColorfulTheme::default();
+
+        println!(
+            "\n{}\n",
+            "ZarzCLI Setup".bold().with(Color::Cyan)
+        );
+        println!(
+            "{}",
+            "Choose a provider to configure. Use the arrow keys and press Enter.".with(Color::DarkGrey)
+        );
+        println!(
+            "{}",
+            "API keys are displayed while typing so you can verify them, then hidden before storing.".with(Color::DarkGrey)
+        );
+        println!(
+            "{}\n",
+            "You can configure additional providers later with `zarz config --reset`.".with(Color::DarkGrey)
+        );
+
+        let options = vec![
+            "Anthropic Claude (recommended for coding)".bold().with(Color::Yellow).to_string(),
+            "OpenAI GPT".bold().with(Color::Yellow).to_string(),
+            "GLM (Z.AI - International GLM-4.6)".bold().with(Color::Yellow).to_string(),
+        ];
+
+        let selection = Select::with_theme(&theme)
+            .with_prompt("Select a provider to set up")
+            .items(&options)
+            .default(0)
+            .interact()?;
 
         let mut config = Self::default();
+        let mut enabled = Vec::new();
 
-        // Ask for Anthropic API key
-        let anthropic_key: String = Input::new()
-            .with_prompt("Enter your Anthropic API key (or press Enter to skip)")
-            .allow_empty(true)
-            .interact_text()?;
-
-        if !anthropic_key.trim().is_empty() {
-            config.anthropic_api_key = Some(anthropic_key.trim().to_string());
-        }
-
-        // Ask for OpenAI API key
-        let openai_key: String = Input::new()
-            .with_prompt("Enter your OpenAI API key (or press Enter to skip)")
-            .allow_empty(true)
-            .interact_text()?;
-
-        if !openai_key.trim().is_empty() {
-            config.openai_api_key = Some(openai_key.trim().to_string());
-        }
-
-        // Ask for GLM API key
-        let glm_key: String = Input::new()
-            .with_prompt("Enter your GLM API key (or press Enter to skip)")
-            .allow_empty(true)
-            .interact_text()?;
-
-        if !glm_key.trim().is_empty() {
-            config.glm_api_key = Some(glm_key.trim().to_string());
+        match selection {
+            0 => {
+                let key = Self::prompt_for_key("Anthropic API key")?;
+                config.anthropic_api_key = Some(key);
+                enabled.push("Anthropic Claude");
+                println!("{}\n", "✓ Anthropic ready".with(Color::Green));
+            }
+            1 => {
+                let key = Self::prompt_for_key("OpenAI API key")?;
+                config.openai_api_key = Some(key);
+                enabled.push("OpenAI GPT");
+                println!("{}\n", "✓ OpenAI ready".with(Color::Green));
+            }
+            _ => {
+                let key = Self::prompt_for_key("GLM API key")?;
+                config.glm_api_key = Some(key);
+                enabled.push("GLM 4.6");
+                println!("{}\n", "✓ GLM ready".with(Color::Green));
+            }
         }
 
         if !config.has_api_key() {
@@ -108,9 +127,51 @@ impl Config {
         }
 
         config.save()?;
-        println!("\n✅ Configuration saved to {}\n", Self::config_path()?.display());
+        println!(
+            "{} {}\n",
+            "✅".with(Color::Green),
+            format!(
+                "Configuration saved to {}",
+                Self::config_path()?.display()
+            )
+            .bold()
+        );
+        println!(
+            "{}",
+            format!("Enabled providers: {}", enabled.join(", ")).with(Color::Green)
+        );
+        println!(
+            "{}\n",
+            "Run `zarz` any time to start chatting.".with(Color::DarkGrey)
+        );
 
         Ok(config)
+    }
+
+    fn prompt_for_key(label: &str) -> Result<String> {
+        loop {
+            print!("Enter your {}: ", label);
+            io::stdout().flush().ok();
+
+            let mut key = String::new();
+            io::stdin()
+                .read_line(&mut key)
+                .context("Failed to read API key from stdin")?;
+
+            let trimmed = key.trim();
+            if trimmed.is_empty() {
+                println!("{}", "Key cannot be empty. Please try again.".with(Color::Red));
+                continue;
+            }
+
+            println!("{}", "Key captured ✔".with(Color::Green));
+            println!(
+                "{}",
+                "(The key is now stored securely and will no longer be displayed.)".with(Color::DarkGrey)
+            );
+
+            return Ok(trimmed.to_string());
+        }
     }
 
     /// Get Anthropic API key from config or environment
@@ -165,5 +226,24 @@ impl Config {
                 unsafe { std::env::set_var("GLM_API_KEY", key); }
             }
         }
+    }
+
+    /// Remove all stored API keys from disk
+    pub fn clear_api_keys(&mut self) -> Result<bool> {
+        let mut removed = false;
+
+        if self.anthropic_api_key.take().is_some() {
+            removed = true;
+        }
+        if self.openai_api_key.take().is_some() {
+            removed = true;
+        }
+        if self.glm_api_key.take().is_some() {
+            removed = true;
+        }
+
+        self.save()?;
+
+        Ok(removed)
     }
 }

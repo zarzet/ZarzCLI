@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::cursor::{MoveToColumn, MoveUp};
+use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent};
+use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use crossterm::ExecutableCommand;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -7,7 +10,7 @@ use rustyline::hint::{Hint as RtHint, Hinter};
 use rustyline::highlight::Highlighter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{Context as RtContext, Editor, Helper};
+use rustyline::{Cmd as RlCmd, ConditionalEventHandler as RlConditionalEventHandler, Context as RtContext, Editor, Event as RlBindingEvent, EventContext as RlEventContext, EventHandler as RlEventHandler, Helper, KeyCode as RlKeyCode, KeyEvent as RlKeyEvent, Modifiers as RlModifiers, RepeatCount as RlRepeatCount};
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 use std::io::{stdout, Write};
@@ -15,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
+    Mutex,
 };
 
 use crate::cli::Provider;
@@ -47,6 +51,7 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "model", description: "Switch to a different AI model" },
     CommandInfo { name: "mcp", description: "Show MCP servers and available tools" },
     CommandInfo { name: "clear", description: "Clear conversation history" },
+    CommandInfo { name: "logout", description: "Remove stored API keys and sign out" },
     CommandInfo { name: "quit", description: "Exit the session" },
     CommandInfo { name: "exit", description: "Exit the session" },
 ];
@@ -144,9 +149,16 @@ impl Highlighter for CommandHelper {}
 impl Validator for CommandHelper {
     fn validate(
         &self,
-        _: &mut ValidationContext<'_>,
+        ctx: &mut ValidationContext<'_>,
     ) -> rustyline::Result<ValidationResult> {
-        Ok(ValidationResult::Valid(None))
+        let input = ctx.input();
+        if input.trim().is_empty() {
+            Ok(ValidationResult::Invalid(Some(
+                "Input cannot be empty".to_string(),
+            )))
+        } else {
+            Ok(ValidationResult::Valid(None))
+        }
     }
 }
 
@@ -206,6 +218,8 @@ pub struct Repl {
     temperature: f32,
     mcp_manager: Option<std::sync::Arc<McpManager>>,
     config: Config,
+    logout_requested: bool,
+    pending_command: Arc<Mutex<Option<String>>>,
 }
 
 impl Repl {
@@ -224,12 +238,14 @@ impl Repl {
         }
 
         stdout().execute(SetForegroundColor(Color::Yellow)).ok();
-        let suffix = if partial.is_empty() {
-            String::new()
+        if partial.is_empty() {
+            println!("Available commands (press Enter to choose):");
         } else {
-            format!(" matching \"{}\"", partial)
-        };
-        println!("Available commands{}:", suffix);
+            println!(
+                "Commands matching '/{}' (press Enter to choose):",
+                partial
+            );
+        }
         for info in matches {
             println!("  /{:<8} - {}", info.name, info.description);
         }
@@ -238,6 +254,13 @@ impl Repl {
         std::io::stdout().flush().ok();
 
         Ok(true)
+    }
+
+    fn take_pending_command(&self) -> Option<String> {
+        self.pending_command
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
     }
 
     pub fn new(
@@ -263,6 +286,8 @@ impl Repl {
             temperature,
             mcp_manager,
             config,
+            logout_requested: false,
+            pending_command: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -271,16 +296,24 @@ impl Repl {
             .context("Failed to initialize readline editor")?;
         editor.set_helper(Some(CommandHelper::default()));
 
+        let handler_down = CommandMenuHandler::new(self.pending_command.clone());
+        editor.bind_sequence(
+            RlKeyEvent(RlKeyCode::Down, RlModifiers::NONE),
+            RlEventHandler::Conditional(Box::new(handler_down)),
+        );
+        let handler_up = CommandMenuHandler::new(self.pending_command.clone());
+        editor.bind_sequence(
+            RlKeyEvent(RlKeyCode::Up, RlModifiers::NONE),
+            RlEventHandler::Conditional(Box::new(handler_up)),
+        );
+
         loop {
-            // Print separator and get input
             Self::print_input_box_start();
 
-            // Simple prompt
             let readline = editor.readline("> ");
 
             match readline {
                 Ok(line) => {
-                    // Print bottom border after input
                     Self::print_input_box_end();
 
                     let line = line.trim();
@@ -297,18 +330,44 @@ impl Repl {
                             eprintln!("Error: {:#}", e);
                         }
 
+                        if self.logout_requested {
+                            break;
+                        }
+
                         if line == "/quit" || line == "/exit" {
                             break;
                         }
                     } else {
+                        if self.logout_requested {
+                            break;
+                        }
+
                         if let Err(e) = self.handle_user_input(line).await {
                             eprintln!("Error: {:#}", e);
+                        }
+
+                        if self.logout_requested {
+                            break;
                         }
                     }
                 }
                 Err(ReadlineError::Interrupted) => {
-                    println!("Interrupted");
-                    break;
+                    Self::print_input_box_end();
+                    if let Some(cmd) = self.take_pending_command() {
+                        editor
+                            .add_history_entry(cmd.as_str())
+                            .context("Failed to add history entry")?;
+                        if let Err(e) = self.handle_command(&cmd).await {
+                            eprintln!("Error: {:#}", e);
+                        }
+
+                        if self.logout_requested {
+                            break;
+                        }
+                    } else {
+                        println!("Interrupted");
+                        break;
+                    }
                 }
                 Err(ReadlineError::Eof) => {
                     println!("Exiting");
@@ -331,7 +390,6 @@ impl Repl {
         let terminal_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(120);
         let border_line = "─".repeat(terminal_width);
 
-        // Print top border
         println!("{}", border_line);
 
         // Reserve a blank line for the prompt so the border wraps the user input
@@ -356,42 +414,56 @@ impl Repl {
         let args = parts.get(1).copied().unwrap_or("");
 
         if cmd == "/" {
-            Self::print_command_suggestions("")?;
+            let matches: Vec<&CommandInfo> = Self::command_list().iter().collect();
+            if let Some(choice) = pick_command_menu("", &matches)? {
+                let mut selected_command = format!("/{}", choice.name);
+                if !args.is_empty() {
+                    selected_command.push(' ');
+                    selected_command.push_str(args);
+                }
+                return Self::execute_command(self, &selected_command).await;
+            }
             return Ok(());
         }
 
         if let Some(partial) = cmd.strip_prefix('/') {
             if !partial.is_empty() && !Self::command_list().iter().any(|info| info.name == partial) {
-                if let Some(first) = Self::command_list()
+                let matches: Vec<&CommandInfo> = Self::command_list()
                     .iter()
-                    .find(|info| info.name.starts_with(partial))
-                {
-                    match first.name {
-                        "help" => return self.show_help(),
-                        "quit" | "exit" => {
-                            println!("Goodbye!");
-                            return Ok(());
-                        }
-                        "apply" => return self.apply_changes().await,
-                        "diff" => return self.show_diff(),
-                        "undo" => return self.undo_changes(),
-                        "edit" => return self.edit_file(args).await,
-                        "run" => return self.run_command(args).await,
-                        "search" => return self.search_symbol(args).await,
-                        "context" => return self.find_context(args).await,
-                        "files" => return self.list_files(),
-                        "model" => return self.switch_model(args).await,
-                        "mcp" => return self.show_mcp_status().await,
-                        "clear" => return self.clear_history(),
-                        _ => {}
-                    }
-                }
+                    .filter(|info| info.name.starts_with(partial))
+                    .collect();
 
-                if Self::print_command_suggestions(partial)? {
+                if matches.len() == 1 {
+                    let mut selected_command = format!("/{}", matches[0].name);
+                    if !args.is_empty() {
+                        selected_command.push(' ');
+                        selected_command.push_str(args);
+                    }
+                    return Self::execute_command(self, &selected_command).await;
+                } else if matches.len() > 1 {
+                    if let Some(choice) = pick_command_menu(partial, &matches)? {
+                        let mut selected_command = format!("/{}", choice.name);
+                        if !args.is_empty() {
+                            selected_command.push(' ');
+                            selected_command.push_str(args);
+                        }
+                        return Self::execute_command(self, &selected_command).await;
+                    } else {
+                        return Ok(());
+                    }
+                } else if Self::print_command_suggestions(partial)? {
                     return Ok(());
                 }
             }
         }
+
+        Self::execute_command(self, command).await
+    }
+
+    async fn execute_command(&mut self, command: &str) -> Result<()> {
+        let parts: Vec<&str> = command.splitn(2, ' ').collect();
+        let cmd = parts[0];
+        let args = parts.get(1).copied().unwrap_or("");
 
         match cmd {
             "/help" => self.show_help(),
@@ -410,6 +482,7 @@ impl Repl {
             "/model" => self.switch_model(args).await,
             "/mcp" => self.show_mcp_status().await,
             "/clear" => self.clear_history(),
+            "/logout" => self.logout(),
             _ => {
                 println!("Unknown command: {}", cmd);
                 println!("Type /help for available commands");
@@ -419,6 +492,12 @@ impl Repl {
     }
 
     async fn handle_user_input(&mut self, input: &str) -> Result<()> {
+        if self.logout_requested {
+            return Err(anyhow!(
+                "You have logged out. Restart ZarzCLI and run 'zarz config' to sign in again."
+            ));
+        }
+
         self.session.add_message(MessageRole::User, input.to_string());
 
         let tools_snapshot = if let Some(manager) = &self.mcp_manager {
@@ -678,6 +757,7 @@ impl Repl {
         println!("                              gpt-5-codex, gpt-4o");
         println!("  /mcp            - Show MCP servers and available tools");
         println!("  /clear          - Clear conversation history");
+        println!("  /logout         - Remove stored API keys and sign out");
         println!("  /quit, /exit    - Exit the session");
         println!();
         println!("Current model: {}", self.model);
@@ -833,6 +913,43 @@ impl Repl {
         Ok(())
     }
 
+    fn logout(&mut self) -> Result<()> {
+        let config_path = Config::config_path()?;
+        let had_keys = self.config.clear_api_keys()?;
+
+        let mut env_removed = false;
+        for var in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GLM_API_KEY"] {
+            if std::env::var(var).is_ok() {
+                env_removed = true;
+            }
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        if had_keys {
+            println!(
+                "Stored API keys removed from {}",
+                config_path.display()
+            );
+        } else {
+            println!(
+                "No stored API keys found at {}",
+                config_path.display()
+            );
+        }
+
+        if env_removed {
+            println!("Cleared API key environment variables for this session.");
+        } else {
+            println!("No API key environment variables were set for this session.");
+        }
+
+        println!("Restart ZarzCLI to complete logout. Run 'zarz config' to sign in again.");
+        self.logout_requested = true;
+        Ok(())
+    }
+
     async fn switch_model(&mut self, model_name: &str) -> Result<()> {
         if model_name.is_empty() {
             println!("Usage: /model <name>");
@@ -871,7 +988,6 @@ impl Repl {
         };
 
         if new_provider_kind != self.provider_kind {
-            // Get API key from config based on provider
             let api_key = match new_provider_kind {
                 Provider::Anthropic => self.config.get_anthropic_key(),
                 Provider::OpenAi => self.config.get_openai_key(),
@@ -973,6 +1089,148 @@ impl Repl {
                 println!("Total servers: {}", servers.len());
                 Ok(())
             }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CommandMenuHandler {
+    pending_command: Arc<Mutex<Option<String>>>,
+}
+
+impl CommandMenuHandler {
+    fn new(pending_command: Arc<Mutex<Option<String>>>) -> Self {
+        Self { pending_command }
+    }
+}
+
+impl RlConditionalEventHandler for CommandMenuHandler {
+    fn handle(
+        &self,
+        evt: &RlBindingEvent,
+        _n: RlRepeatCount,
+        _positive: bool,
+        ctx: &RlEventContext,
+    ) -> Option<RlCmd> {
+        let Some(key) = evt.get(0) else {
+            return None;
+        };
+
+        let is_navigation = *key == RlKeyEvent(RlKeyCode::Down, RlModifiers::NONE)
+            || *key == RlKeyEvent(RlKeyCode::Up, RlModifiers::NONE);
+
+        if !is_navigation {
+            return None;
+        }
+
+        let line = ctx.line();
+        if !line.starts_with('/') {
+            return None;
+        }
+
+        let pos = ctx.pos();
+        let slice_end = pos.min(line.len());
+        let partial = if slice_end > 1 {
+            &line[1..slice_end]
+        } else {
+            ""
+        };
+
+        let matches: Vec<&CommandInfo> = COMMANDS
+            .iter()
+            .filter(|info| info.name.starts_with(partial))
+            .collect();
+
+        if matches.is_empty() {
+            return Some(RlCmd::Noop);
+        }
+
+        match pick_command_menu(partial, &matches) {
+            Ok(Some(choice)) => {
+                if let Ok(mut pending) = self.pending_command.lock() {
+                    *pending = Some(format!("/{}", choice.name));
+                }
+                Some(RlCmd::Abort)
+            }
+            Ok(None) => Some(RlCmd::Noop),
+            Err(err) => {
+                eprintln!("Error: {:#}", err);
+                Some(RlCmd::Noop)
+            }
+        }
+    }
+}
+
+fn pick_command_menu<'a>(
+    partial: &str,
+    matches: &'a [&'a CommandInfo],
+) -> Result<Option<&'a CommandInfo>> {
+    if matches.is_empty() {
+        return Ok(None);
+    }
+
+    println!();
+    println!(
+        "Select a command matching '/{}' (arrow keys to navigate, Enter to run, Esc to cancel):",
+        partial
+    );
+
+    enable_raw_mode().context("Failed to enable raw mode for command picker")?;
+    struct RawModeGuard;
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    let _raw_guard = RawModeGuard;
+
+    let mut stdout = stdout();
+    let mut index = 0usize;
+
+    for _ in 0..matches.len() {
+        println!();
+    }
+    stdout.execute(MoveUp(matches.len() as u16)).ok();
+
+    loop {
+        stdout.execute(MoveToColumn(0)).ok();
+        stdout.execute(Clear(ClearType::FromCursorDown)).ok();
+
+        for (i, info) in matches.iter().enumerate() {
+            let prefix = if i == index { '>' } else { ' ' };
+            if i == index {
+                stdout.execute(SetAttribute(Attribute::Reverse)).ok();
+                println!("{} /{:<16} {}", prefix, info.name, info.description);
+                stdout.execute(SetAttribute(Attribute::NoReverse)).ok();
+            } else {
+                println!("{} /{:<16} {}", prefix, info.name, info.description);
+            }
+        }
+        stdout.flush().ok();
+        stdout.execute(MoveUp(matches.len() as u16)).ok();
+
+        match event::read()? {
+            CtEvent::Key(KeyEvent { code: KeyCode::Up, .. })
+            | CtEvent::Key(KeyEvent { code: KeyCode::Char('k'), .. }) => {
+                index = if index == 0 { matches.len() - 1 } else { index - 1 };
+            }
+            CtEvent::Key(KeyEvent { code: KeyCode::Down, .. })
+            | CtEvent::Key(KeyEvent { code: KeyCode::Char('j'), .. }) => {
+                index = (index + 1) % matches.len();
+            }
+            CtEvent::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                stdout.execute(MoveToColumn(0)).ok();
+                stdout.execute(Clear(ClearType::FromCursorDown)).ok();
+                println!();
+                return Ok(Some(matches[index]));
+            }
+            CtEvent::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
+                stdout.execute(MoveToColumn(0)).ok();
+                stdout.execute(Clear(ClearType::FromCursorDown)).ok();
+                println!();
+                return Ok(None);
+            }
+            _ => {}
         }
     }
 }
