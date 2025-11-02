@@ -1,12 +1,21 @@
 use anyhow::{anyhow, Context, Result};
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::ExecutableCommand;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::hint::{Hint as RtHint, Hinter};
+use rustyline::highlight::Highlighter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{Context as RtContext, Editor, Helper};
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
-use std::io::stdout;
+use std::io::{stdout, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crate::cli::Provider;
 use crate::config::Config;
@@ -17,6 +26,129 @@ use crate::mcp::types::{CallToolResult, ToolContent};
 use crate::providers::{CompletionProvider, CompletionRequest, ProviderClient};
 use crate::session::{MessageRole, Session};
 use serde_json::{self, Value};
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, Duration};
+
+struct CommandInfo {
+    name: &'static str,
+    description: &'static str,
+}
+
+const COMMANDS: &[CommandInfo] = &[
+    CommandInfo { name: "help", description: "Show this help message" },
+    CommandInfo { name: "apply", description: "Apply pending file changes" },
+    CommandInfo { name: "diff", description: "Show pending changes" },
+    CommandInfo { name: "undo", description: "Clear pending changes" },
+    CommandInfo { name: "edit", description: "Load a file for editing" },
+    CommandInfo { name: "run", description: "Execute a shell command" },
+    CommandInfo { name: "search", description: "Search for a symbol" },
+    CommandInfo { name: "context", description: "Find relevant files" },
+    CommandInfo { name: "files", description: "List currently loaded files" },
+    CommandInfo { name: "model", description: "Switch to a different AI model" },
+    CommandInfo { name: "mcp", description: "Show MCP servers and available tools" },
+    CommandInfo { name: "clear", description: "Clear conversation history" },
+    CommandInfo { name: "quit", description: "Exit the session" },
+    CommandInfo { name: "exit", description: "Exit the session" },
+];
+
+#[derive(Clone, Default)]
+struct CommandHelper;
+
+#[derive(Clone)]
+struct CommandHint(String);
+
+impl RtHint for CommandHint {
+    fn display(&self) -> &str {
+        &self.0
+    }
+
+    fn completion(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl Helper for CommandHelper {}
+
+impl Hinter for CommandHelper {
+    type Hint = CommandHint;
+
+    fn hint(&self, line: &str, pos: usize, _: &RtContext<'_>) -> Option<Self::Hint> {
+        if !line.starts_with('/') || pos == 0 {
+            return None;
+        }
+
+        let upto_cursor = &line[..pos];
+        if upto_cursor.contains(' ') {
+            return None;
+        }
+
+        let partial = upto_cursor.trim_start_matches('/');
+        let matches: Vec<&CommandInfo> = COMMANDS
+            .iter()
+            .filter(|info| info.name.starts_with(partial))
+            .collect();
+
+        let first = matches.first()?;
+        let remainder = &first.name[partial.len()..];
+
+        let mut hint_text = String::new();
+
+        if !remainder.is_empty() {
+            hint_text.push_str(remainder);
+        }
+
+        hint_text.push('\n');
+        hint_text.push_str("──────────────────────────────────────────────────────────────");
+        hint_text.push('\n');
+        let name_width = 18usize;
+        for info in matches.iter().take(12) {
+            hint_text.push_str("  /");
+            hint_text.push_str(info.name);
+            if info.name.len() < name_width {
+                hint_text.push_str(&" ".repeat(name_width - info.name.len()));
+            } else {
+                hint_text.push(' ');
+            }
+            hint_text.push_str(info.description);
+            hint_text.push('\n');
+        }
+        if matches.len() > 12 {
+            hint_text.push_str("  ...");
+            hint_text.push('\n');
+        }
+        hint_text.push_str("──────────────────────────────────────────────────────────────");
+
+        if hint_text.is_empty() {
+            return None;
+        }
+
+        Some(CommandHint(hint_text))
+    }
+}
+
+impl Completer for CommandHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        _line: &str,
+        pos: usize,
+        _ctx: &RtContext<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        Ok((pos, Vec::new()))
+    }
+}
+
+impl Highlighter for CommandHelper {}
+
+impl Validator for CommandHelper {
+    fn validate(
+        &self,
+        _: &mut ValidationContext<'_>,
+    ) -> rustyline::Result<ValidationResult> {
+        Ok(ValidationResult::Valid(None))
+    }
+}
 
 const REPL_SYSTEM_PROMPT: &str = r#"You are ZarzCLI, Fapzarz's official CLI for Claude and Codex.
 
@@ -55,6 +187,7 @@ Provide clear, concise responses. When suggesting changes, always use the file b
 Conversation format:
 - The prompt includes the recent transcript using prefixes like "User:", "Assistant:", and "Tool[server.tool]:".
 - Always respond in the voice of "Assistant" to the most recent user message.
+- File changes are applied automatically; never instruct the user to run /apply or similar commands.
 
 MCP tool usage:
 - When the prompt lists available MCP tools, you may request one by replying exactly: CALL_MCP_TOOL server=<server_name> tool=<tool_name> args=<json_object>
@@ -76,6 +209,37 @@ pub struct Repl {
 }
 
 impl Repl {
+    fn command_list() -> &'static [CommandInfo] {
+        COMMANDS
+    }
+
+    fn print_command_suggestions(partial: &str) -> Result<bool> {
+        let matches: Vec<&CommandInfo> = Self::command_list()
+            .iter()
+            .filter(|info| info.name.starts_with(partial))
+            .collect();
+
+        if matches.is_empty() {
+            return Ok(false);
+        }
+
+        stdout().execute(SetForegroundColor(Color::Yellow)).ok();
+        let suffix = if partial.is_empty() {
+            String::new()
+        } else {
+            format!(" matching \"{}\"", partial)
+        };
+        println!("Available commands{}:", suffix);
+        for info in matches {
+            println!("  /{:<8} - {}", info.name, info.description);
+        }
+        stdout().execute(ResetColor).ok();
+        println!();
+        std::io::stdout().flush().ok();
+
+        Ok(true)
+    }
+
     pub fn new(
         working_dir: PathBuf,
         provider: ProviderClient,
@@ -105,8 +269,9 @@ impl Repl {
     pub async fn run(&mut self) -> Result<()> {
         println!("Type /help for available commands, /quit to exit\n");
 
-        let mut editor = DefaultEditor::new()
+        let mut editor: Editor<CommandHelper, DefaultHistory> = Editor::new()
             .context("Failed to initialize readline editor")?;
+        editor.set_helper(Some(CommandHelper::default()));
 
         loop {
             // Print separator and get input
@@ -192,6 +357,44 @@ impl Repl {
         let cmd = parts[0];
         let args = parts.get(1).copied().unwrap_or("");
 
+        if cmd == "/" {
+            Self::print_command_suggestions("")?;
+            return Ok(());
+        }
+
+        if let Some(partial) = cmd.strip_prefix('/') {
+            if !partial.is_empty() && !Self::command_list().iter().any(|info| info.name == partial) {
+                if let Some(first) = Self::command_list()
+                    .iter()
+                    .find(|info| info.name.starts_with(partial))
+                {
+                    match first.name {
+                        "help" => return self.show_help(),
+                        "quit" | "exit" => {
+                            println!("Goodbye!");
+                            return Ok(());
+                        }
+                        "apply" => return self.apply_changes().await,
+                        "diff" => return self.show_diff(),
+                        "undo" => return self.undo_changes(),
+                        "edit" => return self.edit_file(args).await,
+                        "run" => return self.run_command(args).await,
+                        "search" => return self.search_symbol(args).await,
+                        "context" => return self.find_context(args).await,
+                        "files" => return self.list_files(),
+                        "model" => return self.switch_model(args).await,
+                        "mcp" => return self.show_mcp_status().await,
+                        "clear" => return self.clear_history(),
+                        _ => {}
+                    }
+                }
+
+                if Self::print_command_suggestions(partial)? {
+                    return Ok(());
+                }
+            }
+        }
+
         match cmd {
             "/help" => self.show_help(),
             "/quit" | "/exit" => {
@@ -263,7 +466,10 @@ impl Repl {
                 temperature: self.temperature,
             };
 
-            let response = self.provider.complete(&request).await?;
+            let spinner = Spinner::start("Thinking...".to_string());
+            let response_result = self.provider.complete(&request).await;
+            spinner.stop().await;
+            let response = response_result?;
             let raw_text = response.text;
 
             match parse_mcp_tool_call(&raw_text) {
@@ -324,14 +530,20 @@ impl Repl {
 
                     let manager = self.mcp_manager.as_ref().unwrap();
 
-                    let (mut tool_output, is_error) = match manager
+                    let spinner = Spinner::start(format!(
+                        "Running MCP {}.{}...",
+                        parsed.call.server, parsed.call.tool
+                    ));
+                    let tool_result = manager
                         .call_tool(
                             &parsed.call.server,
                             parsed.call.tool.clone(),
                             parsed.call.arguments.clone(),
                         )
-                        .await
-                    {
+                        .await;
+                    spinner.stop().await;
+
+                    let (mut tool_output, is_error) = match tool_result {
                         Ok(result) => {
                             let is_error = result.is_error.unwrap_or(false);
                             let mut text = format_tool_result(&result);
@@ -1026,6 +1238,43 @@ fn print_tool_command(command: &str) -> Result<()> {
     println!("{}", command);
     out.execute(ResetColor)?;
     Ok(())
+}
+
+struct Spinner {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+impl Spinner {
+    fn start(message: String) -> Self {
+        let stop = Arc::new(AtomicBool::new(true));
+        let stop_clone = stop.clone();
+
+        let handle = tokio::spawn(async move {
+            let symbols = ['|', '/', '-', '\\'];
+            let mut index = 0usize;
+
+            while stop_clone.load(Ordering::Relaxed) {
+                let symbol = symbols[index % symbols.len()];
+                let mut out = stdout();
+                let _ = write!(out, "\r{} {}", symbol, message);
+                let _ = out.flush();
+                index = (index + 1) % symbols.len();
+                sleep(Duration::from_millis(120)).await;
+            }
+
+            let mut out = stdout();
+            let _ = write!(out, "\r\x1B[K");
+            let _ = out.flush();
+        });
+
+        Self { stop, handle }
+    }
+
+    async fn stop(self) {
+        self.stop.store(false, Ordering::Relaxed);
+        let _ = self.handle.await;
+    }
 }
 
 fn print_file_change_summary(path: &Path, before: &str, after: &str) -> Result<()> {
