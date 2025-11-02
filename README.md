@@ -1,5 +1,10 @@
 # ZarzCLI
 
+[![npm version](https://img.shields.io/npm/v/zarz.svg)](https://www.npmjs.com/package/zarz)
+[![npm downloads](https://img.shields.io/npm/dd/zarz.svg)](https://www.npmjs.com/package/zarz)
+[![GitHub release](https://img.shields.io/github/v/release/zarzet/ZarzCLI.svg)](https://github.com/zarzet/ZarzCLI/releases)
+[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
+
 Fast AI coding assistant for terminal built with Rust.
 
 ## Installation
