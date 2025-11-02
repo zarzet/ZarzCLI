@@ -218,7 +218,27 @@ impl McpClient {
                     continue;
                 }
 
-                let response: JsonRpcResponse = serde_json::from_str(&line)
+                let value: Value = serde_json::from_str(&line)
+                    .with_context(|| format!("Failed to parse JSON-RPC message: {}", line.trim()))?;
+
+                // Notifications do not include an `id`, so we skip them (surface useful info when present)
+                if value.get("id").is_none() {
+                    if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+                        if method == "notifications/message" {
+                            if let Some(msg) = value
+                                .get("params")
+                                .and_then(|p| p.get("data"))
+                                .and_then(|d| d.get("message"))
+                                .and_then(|m| m.as_str())
+                            {
+                                eprintln!("MCP notification: {}", msg);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                let response: JsonRpcResponse = serde_json::from_value(value)
                     .with_context(|| format!("Failed to parse JSON-RPC response: {}", line.trim()))?;
 
                 if let Some(error) = response.error {

@@ -267,8 +267,6 @@ impl Repl {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        println!("Type /help for available commands, /quit to exit\n");
-
         let mut editor: Editor<CommandHelper, DefaultHistory> = Editor::new()
             .context("Failed to initialize readline editor")?;
         editor.set_helper(Some(CommandHelper::default()));
@@ -915,6 +913,14 @@ impl Repl {
             Some(manager) => {
                 let servers = manager.list_servers().await;
 
+                let tools_by_server = match manager.get_all_tools().await {
+                    Ok(map) => map,
+                    Err(e) => {
+                        eprintln!("Warning: Failed to fetch MCP tools: {}", e);
+                        HashMap::new()
+                    }
+                };
+
                 if servers.is_empty() {
                     println!("No MCP servers are currently running.");
                     println!();
@@ -941,26 +947,24 @@ impl Repl {
                     }
 
                     // Get tools for this server
-                    match manager.get_all_tools().await {
-                        Ok(all_tools) => {
-                            if let Some(tools) = all_tools.get(server_name) {
-                                if !tools.is_empty() {
-                                    println!("    Tools ({}):", tools.len());
-                                    for (i, tool) in tools.iter().enumerate() {
-                                        if i < 5 {
-                                            println!("      - {}: {}", tool.name, tool.description.as_deref().unwrap_or("No description"));
-                                        }
-                                    }
-                                    if tools.len() > 5 {
-                                        println!("      ... and {} more", tools.len() - 5);
-                                    }
-                                } else {
-                                    println!("    Tools: None available");
+                    if let Some(tools) = tools_by_server.get(server_name) {
+                        if !tools.is_empty() {
+                            println!("    Tools ({}):", tools.len());
+                            for (i, tool) in tools.iter().enumerate() {
+                                if i < 5 {
+                                    let description = tool
+                                        .description
+                                        .as_deref()
+                                        .map(|d| truncate_inline(d, 160))
+                                        .unwrap_or_else(|| "No description".to_string());
+                                    println!("      - {}: {}", tool.name, description);
                                 }
                             }
-                        }
-                        Err(e) => {
-                            eprintln!("    Error fetching tools: {}", e);
+                            if tools.len() > 5 {
+                                println!("      ... and {} more", tools.len() - 5);
+                            }
+                        } else {
+                            println!("    Tools: None available");
                         }
                     }
                     println!();

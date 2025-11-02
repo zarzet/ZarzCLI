@@ -2611,7 +2611,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zarz_cli"
+name = "zarzcli"
 version = "0.2.1-ALPHA"
 dependencies = [
  "anyhow",

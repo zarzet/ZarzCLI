@@ -58,20 +58,20 @@ cd zarzcli
 cargo build --release
 ```
 
-3. The binary will be at `target/release/zarz_cli` (or `zarz_cli.exe` on Windows)
+3. The binary will be at `target/release/zarzcli` (or `zarzcli.exe` on Windows)
 
 ### Running from Source
 
 **On Unix/Linux/macOS:**
 ```bash
-./target/release/zarz_cli
+./target/release/zarzcli
 # Or use the wrapper:
 ./zarz.sh
 ```
 
 **On Windows:**
 ```batch
-target\release\zarz_cli.exe
+target\release\zarzcli.exe
 # Or use the wrapper:
 zarz.bat
 ```
@@ -237,7 +237,7 @@ rm -rf zarzcli
 
 **Source build:**
 - Ensure the binary is in your PATH
-- Or run with full path: `./target/release/zarz_cli`
+- Or run with full path: `./target/release/zarzcli`
 
 ### "Build failed" during npm install
 
@@ -261,13 +261,13 @@ If you get "Binary not found" error on Windows:
 
 1. Make sure you're running from Command Prompt or PowerShell (not Git Bash)
 2. Try the batch wrapper: `zarz.bat`
-3. Check if binary exists: `dir target\release\zarz_cli.exe`
+3. Check if binary exists: `dir target\release\zarzcli.exe`
 
 ### Permission denied (Unix/Linux/macOS)
 
 Make the binary executable:
 ```bash
-chmod +x target/release/zarz_cli
+chmod +x target/release/zarzcli
 ```
 
 ## Platform-Specific Notes
@@ -283,7 +283,7 @@ chmod +x target/release/zarz_cli
 - You may need to allow the binary in Security & Privacy settings on first run
 - If you get "cannot be opened because the developer cannot be verified", run:
   ```bash
-  xattr -d com.apple.quarantine target/release/zarz_cli
+  xattr -d com.apple.quarantine target/release/zarzcli
   ```
 
 ### Linux

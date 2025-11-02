@@ -9,7 +9,7 @@ function getBinaryPath() {
   const rootDir = path.join(__dirname, '..');
   const platform = process.platform;
 
-  let binaryName = 'zarz_cli';
+  let binaryName = 'zarzcli';
   if (platform === 'win32') {
     binaryName += '.exe';
   }

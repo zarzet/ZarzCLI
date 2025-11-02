@@ -90,19 +90,34 @@ async fn run(cli: Cli) -> Result<()> {
         let terminal_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(120);
 
         // Center each line of the banner
+        let print_centered = |line: &str| {
+            let line_len = line.chars().count();
+            if terminal_width > line_len {
+                let padding = (terminal_width - line_len) / 2;
+                println!("{}{}", " ".repeat(padding), line);
+            } else {
+                println!("{}", line);
+            }
+        };
+
         for line in banner.lines() {
             if line.trim().is_empty() {
                 println!();
             } else {
-                let line_len = line.chars().count();
-                if terminal_width > line_len {
-                    let padding = (terminal_width - line_len) / 2;
-                    println!("{}{}", " ".repeat(padding), line);
-                } else {
-                    println!("{}", line);
-                }
+                print_centered(line);
             }
         }
+
+        let tagline_lines = ["v0.21-Alpha", "Type /help for available commands, /quit to exit"];
+
+        for (index, line) in tagline_lines.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            print_centered(line);
+        }
+
+        println!();
     }
 
     // Check if this is a config or MCP command - they don't need API keys

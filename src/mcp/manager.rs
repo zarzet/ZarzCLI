@@ -127,8 +127,20 @@ impl McpManager {
         &self,
         server_name: &str,
         tool_name: String,
-        arguments: Option<HashMap<String, serde_json::Value>>,
+        mut arguments: Option<HashMap<String, serde_json::Value>>,
     ) -> Result<super::types::CallToolResult> {
+        if let Some(args) = arguments.as_mut() {
+            if let Some(value) = args.get_mut("sources") {
+                if let serde_json::Value::Array(items) = value {
+                    let contains_strings = items.iter().all(|item| matches!(item, serde_json::Value::String(_)));
+                    if contains_strings {
+                        eprintln!("Warning: Removing incompatible 'sources' parameter from MCP tool call (expected object array). Using server defaults instead.");
+                        args.remove("sources");
+                    }
+                }
+            }
+        }
+
         let clients = self.clients.read().await;
 
         let client = clients.get(server_name)
