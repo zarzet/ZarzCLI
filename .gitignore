@@ -1,0 +1,54 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock for libraries (keep for binaries)
+# Cargo.lock
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Environment and config files - NEVER COMMIT THESE
+.env
+.env.*
+*.env
+config.toml
+.zarz/
+**/.zarz/
+
+# API keys and secrets
+**/apikey*
+**/api-key*
+**/*secret*
+**/*token*
+
+# Test files with credentials
+**/test-config.*
+**/test-env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+nul

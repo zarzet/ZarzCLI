@@ -1,0 +1,53 @@
+{
+  "name": "zarz",
+  "version": "0.1.0",
+  "description": "Fast AI coding assistant for terminal built with Rust",
+  "main": "bin/zarz.js",
+  "bin": {
+    "zarz": "./bin/zarz.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "build": "cargo build --release",
+    "test": "cargo test"
+  },
+  "keywords": [
+    "ai",
+    "coding-assistant",
+    "cli",
+    "claude",
+    "codex",
+    "gpt",
+    "anthropic",
+    "openai",
+    "rust"
+  ],
+  "author": "zarzet",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zarzet/zarzcli.git"
+  },
+  "private": false,
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "files": [
+    "bin/",
+    "scripts/",
+    "src/",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "QUICKSTART.md",
+    "MODELS.md"
+  ],
+  "dependencies": {},
+  "devDependencies": {},
+  "preferGlobal": true
+}
