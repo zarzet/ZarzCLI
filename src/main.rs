@@ -7,6 +7,7 @@ mod fs_ops;
 mod intelligence;
 mod repl;
 mod session;
+mod conversation_store;
 
 use std::{
     collections::HashMap,
@@ -108,7 +109,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        let tagline_lines = ["v0.21-Alpha", "Type /help for available commands, /quit to exit"];
+        let tagline_lines = ["v0.3.0-Alpha", "Type /help for available commands, /exit to exit"];
 
         for (index, line) in tagline_lines.iter().enumerate() {
             if index > 0 {

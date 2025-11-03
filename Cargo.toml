@@ -1,6 +1,6 @@
 [package]
 name = "zarzcli"
-version = "0.2.1-ALPHA"
+version = "0.3.0-ALPHA"
 edition = "2024"
 
 [dependencies]
@@ -27,3 +27,4 @@ bytes = "1.10.1"
 toml = "0.9.8"
 quote = "1.0.41"
 dirs = "6.0.0"
+chrono = { version = "0.4.39", features = ["serde"] }

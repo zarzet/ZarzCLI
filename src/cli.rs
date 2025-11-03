@@ -10,6 +10,23 @@ pub enum Provider {
 }
 
 impl Provider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Provider::Anthropic => "anthropic",
+            Provider::OpenAi => "openai",
+            Provider::Glm => "glm",
+        }
+    }
+
+    pub fn from_str(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "anthropic" => Some(Provider::Anthropic),
+            "openai" => Some(Provider::OpenAi),
+            "glm" => Some(Provider::Glm),
+            _ => None,
+        }
+    }
+
     #[allow(dead_code)]
     pub fn from_env_or_default() -> Self {
         match std::env::var("ZARZ_PROVIDER")

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,6 +34,10 @@ pub struct Session {
     pub pending_changes: Vec<PendingChange>,
     pub project_intelligence: ProjectIntelligence,
     pub working_directory: PathBuf,
+    pub storage_id: Option<String>,
+    pub title: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl Session {
@@ -45,6 +50,10 @@ impl Session {
             pending_changes: Vec::new(),
             project_intelligence,
             working_directory,
+            storage_id: None,
+            title: None,
+            created_at: None,
+            updated_at: None,
         }
     }
 
@@ -63,6 +72,13 @@ impl Session {
 
     pub fn clear_pending_changes(&mut self) {
         self.pending_changes.clear();
+    }
+
+    pub fn reset_metadata(&mut self) {
+        self.storage_id = None;
+        self.title = None;
+        self.created_at = None;
+        self.updated_at = None;
     }
 
     pub fn load_file(&mut self, path: PathBuf, content: String) {

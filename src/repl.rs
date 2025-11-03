@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
-use crossterm::ExecutableCommand;
+use crossterm::{cursor, terminal::{self, ClearType}, ExecutableCommand, QueueableCommand};
 use dialoguer::{theme::ColorfulTheme, Select};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -20,6 +20,7 @@ use std::sync::{
 };
 
 use crate::cli::Provider;
+use crate::conversation_store::{ConversationStore, ConversationSummary};
 use crate::config::Config;
 use crate::executor::CommandExecutor;
 use crate::fs_ops::FileSystemOps;
@@ -48,9 +49,9 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "files", description: "List currently loaded files" },
     CommandInfo { name: "model", description: "Switch to a different AI model" },
     CommandInfo { name: "mcp", description: "Show MCP servers and available tools" },
+    CommandInfo { name: "resume", description: "Resume a previous chat session" },
     CommandInfo { name: "clear", description: "Clear conversation history" },
     CommandInfo { name: "logout", description: "Remove stored API keys and sign out" },
-    CommandInfo { name: "quit", description: "Exit the session" },
     CommandInfo { name: "exit", description: "Exit the session" },
 ];
 
@@ -179,8 +180,9 @@ Available commands the user can use:
 - /files - List currently loaded files
 - /model <name> - Switch to a different AI model
 - /mcp - Show MCP servers and available tools
+- /resume - Resume a previous chat session
 - /clear - Clear conversation history
-- /quit or /exit - Exit the session
+- /exit - Exit the session
 
 Tone and style:
 - Only use emojis if the user explicitly requests it
@@ -257,6 +259,59 @@ impl Repl {
             .and_then(|mut guard| guard.take())
     }
 
+    fn record_message(&mut self, role: MessageRole, content: String) {
+        self.session.add_message(role, content);
+        self.persist_session_if_needed();
+    }
+
+    fn draw_prompt_frame() {
+        let mut out = stdout();
+        let width = terminal::size().map(|(w, _)| w as usize).unwrap_or(120);
+        let border = "─".repeat(width);
+
+        out.queue(cursor::Hide).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(Print(&border)).ok();
+        out.queue(Print("\r\n")).ok();
+        out.queue(Print("\r\n")).ok();
+        out.queue(Print(&border)).ok();
+        out.queue(cursor::MoveUp(1)).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(cursor::Show).ok();
+        out.flush().ok();
+    }
+
+    fn clear_prompt_frame() {
+        let mut out = stdout();
+        out.queue(cursor::Hide).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+        out.queue(cursor::MoveUp(1)).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+        out.queue(cursor::MoveDown(2)).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+        out.queue(cursor::MoveUp(2)).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(cursor::Show).ok();
+        out.flush().ok();
+    }
+
+    fn persist_session_if_needed(&mut self) {
+        if self.session.conversation_history.is_empty() {
+            return;
+        }
+
+        if let Err(err) = ConversationStore::save_session(
+            &mut self.session,
+            self.provider_kind.clone(),
+            &self.model,
+        ) {
+            eprintln!("Warning: Failed to save session history: {:#}", err);
+        }
+    }
+
     pub fn new(
         working_dir: PathBuf,
         provider: ProviderClient,
@@ -302,19 +357,22 @@ impl Repl {
         );
 
         loop {
-            Self::print_input_box_start();
-
+            Self::draw_prompt_frame();
             let readline = editor.readline("> ");
 
             match readline {
                 Ok(line) => {
-                    Self::print_input_box_end();
-
+                    Self::clear_prompt_frame();
                     let line = line.trim();
 
                     if line.is_empty() {
                         continue;
                     }
+
+                    let mut out = stdout();
+                    out.execute(terminal::Clear(ClearType::CurrentLine)).ok();
+                    out.execute(cursor::MoveToColumn(0)).ok();
+                    println!("> {}\n", line);
 
                     editor.add_history_entry(line)
                         .context("Failed to add history entry")?;
@@ -328,7 +386,7 @@ impl Repl {
                             break;
                         }
 
-                        if line == "/quit" || line == "/exit" {
+                        if line == "/exit" {
                             break;
                         }
                     } else {
@@ -346,7 +404,7 @@ impl Repl {
                     }
                 }
                 Err(ReadlineError::Interrupted) => {
-                    Self::print_input_box_end();
+                    Self::clear_prompt_frame();
                     if let Some(cmd) = self.take_pending_command() {
                         println!("> {}", cmd);
                         editor
@@ -366,10 +424,12 @@ impl Repl {
                     break;
                 }
                 Err(ReadlineError::Eof) => {
+                    Self::clear_prompt_frame();
                     println!("Exiting");
                     break;
                 }
                 Err(err) => {
+                    Self::clear_prompt_frame();
                     eprintln!("Error: {:#}", err);
                     break;
                 }
@@ -377,31 +437,6 @@ impl Repl {
         }
 
         Ok(())
-    }
-
-    fn print_input_box_start() {
-        use crossterm::terminal;
-
-        // Get terminal width, fallback to 120 if unable to get
-        let terminal_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(120);
-        let border_line = "─".repeat(terminal_width);
-
-        println!("{}", border_line);
-
-        // Reserve a blank line for the prompt so the border wraps the user input
-        println!();
-
-        // Print bottom border immediately so it's visible while typing
-        println!("{}", border_line);
-
-        // Move cursor up 2 lines so the prompt sits between the borders
-        print!("\x1B[2A");
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-    }
-
-    fn print_input_box_end() {
-        // Bottom border already printed, just add newline to move past it
-        println!();
     }
 
     async fn handle_command(&mut self, command: &str) -> Result<()> {
@@ -463,7 +498,7 @@ impl Repl {
 
         match cmd {
             "/help" => self.show_help(),
-            "/quit" | "/exit" => {
+            "/exit" => {
                 println!("Goodbye!");
                 Ok(())
             }
@@ -477,6 +512,7 @@ impl Repl {
             "/files" => self.list_files(),
             "/model" => self.switch_model(args).await,
             "/mcp" => self.show_mcp_status().await,
+            "/resume" => self.resume_session(args).await,
             "/clear" => self.clear_history(),
             "/logout" => self.logout(),
             _ => {
@@ -494,7 +530,7 @@ impl Repl {
             ));
         }
 
-        self.session.add_message(MessageRole::User, input.to_string());
+        self.record_message(MessageRole::User, input.to_string());
 
         let tools_snapshot = if let Some(manager) = &self.mcp_manager {
             match manager.get_all_tools().await {
@@ -550,9 +586,9 @@ impl Repl {
                     if let Some(prefix_text) = parsed.prefix.as_deref() {
                         let display = strip_file_blocks(prefix_text);
                         if !display.trim().is_empty() {
-                            print_assistant_message(&display)?;
+                            print_assistant_message(&display, &self.model)?;
                         }
-                        self.session.add_message(
+                        self.record_message(
                             MessageRole::Assistant,
                             prefix_text.to_string(),
                         );
@@ -561,12 +597,14 @@ impl Repl {
                             "Calling MCP tool {}.{}...",
                             parsed.call.server, parsed.call.tool
                         );
-                        print_assistant_message(&note)?;
-                        self.session.add_message(MessageRole::Assistant, note);
+                        print_assistant_message(&note, &self.model)?;
+                        self.record_message(MessageRole::Assistant, note);
                     }
 
-                    self.session
-                        .add_message(MessageRole::Assistant, parsed.command_text.clone());
+                    self.record_message(
+                        MessageRole::Assistant,
+                        parsed.command_text.clone(),
+                    );
                     print_tool_command(&parsed.command_text)?;
 
                     if self.mcp_manager.is_none() {
@@ -574,7 +612,7 @@ impl Repl {
                         println!("MCP tool request ignored: no MCP manager configured.");
                         stdout().execute(ResetColor).ok();
 
-                        self.session.add_message(
+                        self.record_message(
                             MessageRole::Tool {
                                 server: parsed.call.server.clone(),
                                 tool: parsed.call.tool.clone(),
@@ -590,7 +628,7 @@ impl Repl {
                         println!("Skipping MCP tool call (limit of {} reached).", max_tool_calls);
                         stdout().execute(ResetColor).ok();
 
-                        self.session.add_message(
+                        self.record_message(
                             MessageRole::Tool {
                                 server: parsed.call.server.clone(),
                                 tool: parsed.call.tool.clone(),
@@ -646,7 +684,7 @@ impl Repl {
                         tool_output.clone()
                     };
 
-                    self.session.add_message(
+                    self.record_message(
                         MessageRole::Tool {
                             server: parsed.call.server.clone(),
                             tool: parsed.call.tool.clone(),
@@ -665,11 +703,11 @@ impl Repl {
                 }
                 Ok(None) => {
                     final_response = Some(raw_text.clone());
-                    self.session.add_message(MessageRole::Assistant, raw_text.clone());
+                    self.record_message(MessageRole::Assistant, raw_text.clone());
                     break;
                 }
                 Err(parse_error) => {
-                    self.session.add_message(MessageRole::Assistant, raw_text.clone());
+                    self.record_message(MessageRole::Assistant, raw_text.clone());
                     stdout().execute(SetForegroundColor(Color::Yellow)).ok();
                     println!("Warning: {}", parse_error);
                     stdout().execute(ResetColor).ok();
@@ -682,7 +720,7 @@ impl Repl {
         if let Some(text) = final_response {
             let printable = strip_file_blocks(&text);
             if !printable.trim().is_empty() {
-                print_assistant_message(&printable)?;
+                print_assistant_message(&printable, &self.model)?;
             }
 
             let file_blocks = parse_file_blocks(&text);
@@ -752,9 +790,10 @@ impl Repl {
         println!("                    Examples: claude-sonnet-4-5-20250929, claude-haiku-4-5,");
         println!("                              gpt-5-codex, gpt-4o");
         println!("  /mcp            - Show MCP servers and available tools");
+        println!("  /resume         - Resume a previous chat session");
         println!("  /clear          - Clear conversation history");
         println!("  /logout         - Remove stored API keys and sign out");
-        println!("  /quit, /exit    - Exit the session");
+        println!("  /exit           - Exit the session");
         println!();
         println!("Current model: {}", self.model);
         println!("Current provider: {}", self.provider.name());
@@ -905,7 +944,141 @@ impl Repl {
 
     fn clear_history(&mut self) -> Result<()> {
         self.session.conversation_history.clear();
+        self.session.reset_metadata();
         println!("Conversation history cleared");
+        Ok(())
+    }
+
+    async fn resume_session(&mut self, args: &str) -> Result<()> {
+        let summaries = ConversationStore::list_summaries()?;
+
+        if summaries.is_empty() {
+            println!("No saved sessions found.");
+            return Ok(());
+        }
+
+        let trimmed = args.trim();
+
+        let selected_summary = if trimmed.is_empty() {
+            let items: Vec<String> = summaries
+                .iter()
+                .map(|summary| format_session_line(summary))
+                .collect();
+
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select a session to resume")
+                .items(&items)
+                .default(0)
+                .interact_opt()?;
+
+            match selection {
+                Some(index) => summaries.get(index).cloned(),
+                None => {
+                    println!("Resume cancelled.");
+                    return Ok(());
+                }
+            }
+        } else {
+            let needle = trimmed.to_ascii_lowercase();
+            summaries
+                .iter()
+                .find(|summary| {
+                    summary.id.to_ascii_lowercase().starts_with(&needle)
+                        || summary
+                            .title
+                            .to_ascii_lowercase()
+                            .contains(&needle)
+                })
+                .cloned()
+        };
+
+        let Some(summary) = selected_summary else {
+            println!("No saved session matches '{}'.", trimmed);
+            return Ok(());
+        };
+
+        let snapshot = ConversationStore::load_snapshot(&summary.id)?;
+
+        let previous_provider = self.provider_kind.clone();
+        let provider_kind = Provider::from_str(&snapshot.provider).ok_or_else(|| {
+            anyhow!(
+                "Unknown provider '{}' in saved session",
+                snapshot.provider
+            )
+        })?;
+
+        let switching_provider = provider_kind != previous_provider;
+
+        if switching_provider {
+            let api_key = match provider_kind {
+                Provider::Anthropic => self.config.get_anthropic_key(),
+                Provider::OpenAi => self.config.get_openai_key(),
+                Provider::Glm => self.config.get_glm_key(),
+            };
+
+            let client = ProviderClient::new(
+                provider_kind.clone(),
+                api_key,
+                self.endpoint.clone(),
+                self.timeout,
+            )?;
+
+            self.provider = client;
+            self.provider_kind = provider_kind;
+        }
+
+        let previous_model = self.model.clone();
+        self.model = snapshot.model.clone();
+        self.session.conversation_history = snapshot.messages.clone();
+        self.session.storage_id = Some(snapshot.id.clone());
+        self.session.title = Some(snapshot.title.clone());
+        self.session.created_at = Some(snapshot.created_at);
+        self.session.updated_at = Some(snapshot.updated_at);
+        self.session.pending_changes.clear();
+        self.session.current_files.clear();
+
+        if !snapshot.working_directory.eq(&self.session.working_directory) {
+            println!(
+                "Note: saved session was created in {}",
+                snapshot.working_directory.display()
+            );
+        }
+
+        if switching_provider || self.model != previous_model {
+            println!(
+                "Active provider/model set to {} / {}",
+                snapshot.provider, self.model
+            );
+        }
+
+        let formatted_time = snapshot
+            .updated_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+
+        println!(
+            "Resumed session '{}' [{} • {}] ({} messages, updated {})",
+            snapshot.title,
+            snapshot.provider,
+            snapshot.model,
+            snapshot.message_count,
+            formatted_time
+        );
+
+        if let Some(last_reply) = snapshot
+            .messages
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, MessageRole::Assistant))
+        {
+            let preview = truncate_for_display(&last_reply.content, 240);
+            if !preview.trim().is_empty() {
+                println!();
+                print_assistant_message(&preview, &self.model)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -1089,6 +1262,33 @@ impl Repl {
     }
 }
 
+fn format_session_line(summary: &ConversationSummary) -> String {
+    let time_str = summary
+        .updated_at
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+
+    let mut title = summary.title.clone();
+    if title.len() > 60 {
+        title.truncate(60);
+        title.push('…');
+    }
+
+    let plural = if summary.message_count == 1 { "" } else { "s" };
+
+    format!(
+        "{} │ {} [{} • {}] • {} message{} (id: {})",
+        time_str,
+        title,
+        summary.provider,
+        summary.model,
+        summary.message_count,
+        plural,
+        summary.id
+    )
+}
+
 #[derive(Clone)]
 struct CommandMenuHandler {
     pending_command: Arc<Mutex<Option<String>>>,
@@ -1185,6 +1385,8 @@ fn pick_command_menu<'a>(
     if matches.is_empty() {
         return Ok(None);
     }
+
+    print!("\n\n");
 
     let theme = ColorfulTheme::default();
     let items: Vec<String> = matches
@@ -1460,10 +1662,35 @@ fn strip_file_blocks(text: &str) -> String {
     output.trim_end_matches('\n').to_string()
 }
 
-fn print_assistant_message(text: &str) -> Result<()> {
+fn get_model_display_name(model: &str) -> String {
+    if model.contains("sonnet") {
+        "Sonnet".to_string()
+    } else if model.contains("opus") {
+        "Opus".to_string()
+    } else if model.contains("haiku") {
+        "Haiku".to_string()
+    } else if model.starts_with("gpt-5-codex") {
+        "GPT-5 Codex".to_string()
+    } else if model.starts_with("gpt-4o") {
+        "GPT-4o".to_string()
+    } else if model.starts_with("gpt-4-turbo") {
+        "GPT-4 Turbo".to_string()
+    } else if model.starts_with("glm-4.6") {
+        "GLM-4.6".to_string()
+    } else if model.starts_with("glm-4.5") {
+        "GLM-4.5".to_string()
+    } else if model.starts_with("glm") {
+        "GLM".to_string()
+    } else {
+        model.to_string()
+    }
+}
+
+fn print_assistant_message(text: &str, model: &str) -> Result<()> {
     let mut out = stdout();
+    let model_name = get_model_display_name(model);
     out.execute(SetForegroundColor(Color::Green))?;
-    out.execute(Print("Assistant: "))?;
+    out.execute(Print(format!("{}: ", model_name)))?;
     out.execute(ResetColor)?;
     println!("{}", text);
     println!();
