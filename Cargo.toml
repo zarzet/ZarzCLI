@@ -1,6 +1,6 @@
 [package]
 name = "zarzcli"
-version = "0.3.0-ALPHA"
+version = "0.3.1-ALPHA"
 edition = "2024"
 
 [dependencies]

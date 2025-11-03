@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::{cursor, terminal::{self, ClearType}, ExecutableCommand, QueueableCommand};
 use dialoguer::{theme::ColorfulTheme, Select};
 use rustyline::completion::{Completer, Pair};
@@ -1689,11 +1689,71 @@ fn get_model_display_name(model: &str) -> String {
 fn print_assistant_message(text: &str, model: &str) -> Result<()> {
     let mut out = stdout();
     let model_name = get_model_display_name(model);
+
     out.execute(SetForegroundColor(Color::Green))?;
+    out.execute(Print("● "))?;
     out.execute(Print(format!("{}: ", model_name)))?;
     out.execute(ResetColor)?;
-    println!("{}", text);
     println!();
+
+    print_formatted_text(text, 2)?;
+    println!();
+    Ok(())
+}
+
+fn print_formatted_text(text: &str, indent_spaces: usize) -> Result<()> {
+    let mut out = stdout();
+    let indent = " ".repeat(indent_spaces);
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (i, line) in lines.iter().enumerate() {
+        print!("{}", indent);
+
+        let mut chars = line.chars().peekable();
+        let mut buffer = String::new();
+
+        while let Some(ch) = chars.next() {
+            if ch == '*' && chars.peek() == Some(&'*') {
+                chars.next();
+
+                if !buffer.is_empty() {
+                    print!("{}", buffer);
+                    buffer.clear();
+                }
+
+                let mut bold_text = String::new();
+                let mut found_closing = false;
+
+                while let Some(ch) = chars.next() {
+                    if ch == '*' && chars.peek() == Some(&'*') {
+                        chars.next();
+                        found_closing = true;
+                        break;
+                    }
+                    bold_text.push(ch);
+                }
+
+                if found_closing && !bold_text.is_empty() {
+                    out.execute(SetAttribute(Attribute::Bold))?;
+                    print!("{}", bold_text);
+                    out.execute(SetAttribute(Attribute::Reset))?;
+                } else {
+                    print!("**{}", bold_text);
+                }
+            } else {
+                buffer.push(ch);
+            }
+        }
+
+        if !buffer.is_empty() {
+            print!("{}", buffer);
+        }
+
+        if i < lines.len() - 1 {
+            println!();
+        }
+    }
+
     Ok(())
 }
 
