@@ -284,12 +284,13 @@ impl Repl {
     fn clear_prompt_frame() {
         let mut out = stdout();
         out.queue(cursor::Hide).ok();
-        out.queue(cursor::MoveToColumn(0)).ok();
-        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
         out.queue(cursor::MoveUp(1)).ok();
         out.queue(cursor::MoveToColumn(0)).ok();
         out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
-        out.queue(cursor::MoveDown(2)).ok();
+        out.queue(cursor::MoveDown(1)).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+        out.queue(cursor::MoveDown(1)).ok();
         out.queue(cursor::MoveToColumn(0)).ok();
         out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
         out.queue(cursor::MoveUp(2)).ok();
@@ -372,7 +373,7 @@ impl Repl {
                     let mut out = stdout();
                     out.execute(terminal::Clear(ClearType::CurrentLine)).ok();
                     out.execute(cursor::MoveToColumn(0)).ok();
-                    println!("> {}\n", line);
+                    println!("> {}", line);
 
                     editor.add_history_entry(line)
                         .context("Failed to add history entry")?;
@@ -1689,14 +1690,16 @@ fn get_model_display_name(model: &str) -> String {
 fn print_assistant_message(text: &str, model: &str) -> Result<()> {
     let mut out = stdout();
     let model_name = get_model_display_name(model);
+    let trimmed_text = text.trim();
 
+    println!();
     out.execute(SetForegroundColor(Color::Green))?;
-    out.execute(Print("● "))?;
-    out.execute(Print(format!("{}: ", model_name)))?;
+    print!("● {}:", model_name);
     out.execute(ResetColor)?;
     println!();
 
-    print_formatted_text(text, 2)?;
+    print_formatted_text(trimmed_text, 2)?;
+    println!();
     println!();
     Ok(())
 }
