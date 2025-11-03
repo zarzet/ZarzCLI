@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use crossterm::cursor::{MoveToColumn, MoveUp};
-use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::ExecutableCommand;
+use dialoguer::{theme::ColorfulTheme, Select};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::hint::{Hint as RtHint, Hinter};
@@ -88,25 +86,26 @@ impl Hinter for CommandHelper {
         }
 
         let partial = upto_cursor.trim_start_matches('/');
+
         let matches: Vec<&CommandInfo> = COMMANDS
             .iter()
             .filter(|info| info.name.starts_with(partial))
             .collect();
 
-        let first = matches.first()?;
-        let remainder = &first.name[partial.len()..];
-
-        let mut hint_text = String::new();
-
-        if !remainder.is_empty() {
-            hint_text.push_str(remainder);
+        if matches.is_empty() {
+            return None;
         }
 
-        hint_text.push('\n');
-        hint_text.push_str("──────────────────────────────────────────────────────────────");
-        hint_text.push('\n');
-        let name_width = 18usize;
-        for info in matches.iter().take(12) {
+        let mut hint_text = String::from("\n");
+
+        if partial.is_empty() {
+            hint_text.push_str("Available commands (press ↓ to browse):\n");
+        } else {
+            hint_text.push_str(&format!("Matches for '/{}' (press ↓ to browse):\n", partial));
+        }
+
+        let name_width = 10usize;
+        for info in matches.iter().take(6) {
             hint_text.push_str("  /");
             hint_text.push_str(info.name);
             if info.name.len() < name_width {
@@ -117,17 +116,12 @@ impl Hinter for CommandHelper {
             hint_text.push_str(info.description);
             hint_text.push('\n');
         }
-        if matches.len() > 12 {
-            hint_text.push_str("  ...");
-            hint_text.push('\n');
-        }
-        hint_text.push_str("──────────────────────────────────────────────────────────────");
 
-        if hint_text.is_empty() {
-            return None;
+        if matches.len() > 6 {
+            hint_text.push_str("  ...\n");
         }
 
-        Some(CommandHint(hint_text))
+        Some(CommandHint(hint_text.trim_end().to_string()))
     }
 }
 
@@ -354,6 +348,7 @@ impl Repl {
                 Err(ReadlineError::Interrupted) => {
                     Self::print_input_box_end();
                     if let Some(cmd) = self.take_pending_command() {
+                        println!("> {}", cmd);
                         editor
                             .add_history_entry(cmd.as_str())
                             .context("Failed to add history entry")?;
@@ -364,10 +359,11 @@ impl Repl {
                         if self.logout_requested {
                             break;
                         }
-                    } else {
-                        println!("Interrupted");
-                        break;
+
+                        continue;
                     }
+                    println!();
+                    break;
                 }
                 Err(ReadlineError::Eof) => {
                     println!("Exiting");
@@ -415,7 +411,7 @@ impl Repl {
 
         if cmd == "/" {
             let matches: Vec<&CommandInfo> = Self::command_list().iter().collect();
-            if let Some(choice) = pick_command_menu("", &matches)? {
+            if let Some(choice) = pick_command_menu("", &matches, 0)? {
                 let mut selected_command = format!("/{}", choice.name);
                 if !args.is_empty() {
                     selected_command.push(' ');
@@ -441,7 +437,7 @@ impl Repl {
                     }
                     return Self::execute_command(self, &selected_command).await;
                 } else if matches.len() > 1 {
-                    if let Some(choice) = pick_command_menu(partial, &matches)? {
+                    if let Some(choice) = pick_command_menu(partial, &matches, 0)? {
                         let mut selected_command = format!("/{}", choice.name);
                         if !args.is_empty() {
                             selected_command.push(' ');
@@ -1128,13 +1124,17 @@ impl RlConditionalEventHandler for CommandMenuHandler {
             return None;
         }
 
-        let pos = ctx.pos();
-        let slice_end = pos.min(line.len());
-        let partial = if slice_end > 1 {
-            &line[1..slice_end]
-        } else {
-            ""
-        };
+        let pos = ctx.pos().min(line.len());
+        let upto_cursor = &line[..pos];
+        if upto_cursor.contains(' ') {
+            return None;
+        }
+
+        let partial = if pos > 1 { &line[1..pos] } else { "" };
+        let args_suffix = line
+            .find(' ')
+            .map(|idx| line[idx..].to_string())
+            .unwrap_or_default();
 
         let matches: Vec<&CommandInfo> = COMMANDS
             .iter()
@@ -1145,14 +1145,30 @@ impl RlConditionalEventHandler for CommandMenuHandler {
             return Some(RlCmd::Noop);
         }
 
-        match pick_command_menu(partial, &matches) {
+        let initial_index = match key.0 {
+            RlKeyCode::Up => matches.len().saturating_sub(1),
+            _ => 0,
+        };
+
+        match pick_command_menu(partial, &matches, initial_index) {
             Ok(Some(choice)) => {
                 if let Ok(mut pending) = self.pending_command.lock() {
-                    *pending = Some(format!("/{}", choice.name));
+                    let mut command = format!("/{}", choice.name);
+                    if !args_suffix.is_empty() {
+                        command.push_str(&args_suffix);
+                    }
+                    *pending = Some(command);
                 }
-                Some(RlCmd::Abort)
+                Some(RlCmd::Interrupt)
             }
-            Ok(None) => Some(RlCmd::Noop),
+            Ok(None) => {
+                if let Ok(mut pending) = self.pending_command.lock() {
+                    if pending.is_some() {
+                        *pending = None;
+                    }
+                }
+                Some(RlCmd::Noop)
+            }
             Err(err) => {
                 eprintln!("Error: {:#}", err);
                 Some(RlCmd::Noop)
@@ -1164,75 +1180,35 @@ impl RlConditionalEventHandler for CommandMenuHandler {
 fn pick_command_menu<'a>(
     partial: &str,
     matches: &'a [&'a CommandInfo],
+    initial_index: usize,
 ) -> Result<Option<&'a CommandInfo>> {
     if matches.is_empty() {
         return Ok(None);
     }
 
-    println!();
-    println!(
-        "Select a command matching '/{}' (arrow keys to navigate, Enter to run, Esc to cancel):",
-        partial
-    );
+    let theme = ColorfulTheme::default();
+    let items: Vec<String> = matches
+        .iter()
+        .map(|info| format!("/{:<16} {}", info.name, info.description))
+        .collect();
 
-    enable_raw_mode().context("Failed to enable raw mode for command picker")?;
-    struct RawModeGuard;
-    impl Drop for RawModeGuard {
-        fn drop(&mut self) {
-            let _ = disable_raw_mode();
-        }
-    }
-    let _raw_guard = RawModeGuard;
+    let prompt = if partial.is_empty() {
+        "Select a command".to_string()
+    } else {
+        format!("Commands matching '/{}'", partial)
+    };
 
-    let mut stdout = stdout();
-    let mut index = 0usize;
+    let default_index = initial_index.min(items.len() - 1);
 
-    for _ in 0..matches.len() {
-        println!();
-    }
-    stdout.execute(MoveUp(matches.len() as u16)).ok();
+    let selection = Select::with_theme(&theme)
+        .with_prompt(prompt)
+        .items(&items)
+        .default(default_index)
+        .clear(true)
+        .report(false)
+        .interact_opt()?;
 
-    loop {
-        stdout.execute(MoveToColumn(0)).ok();
-        stdout.execute(Clear(ClearType::FromCursorDown)).ok();
-
-        for (i, info) in matches.iter().enumerate() {
-            let prefix = if i == index { '>' } else { ' ' };
-            if i == index {
-                stdout.execute(SetAttribute(Attribute::Reverse)).ok();
-                println!("{} /{:<16} {}", prefix, info.name, info.description);
-                stdout.execute(SetAttribute(Attribute::NoReverse)).ok();
-            } else {
-                println!("{} /{:<16} {}", prefix, info.name, info.description);
-            }
-        }
-        stdout.flush().ok();
-        stdout.execute(MoveUp(matches.len() as u16)).ok();
-
-        match event::read()? {
-            CtEvent::Key(KeyEvent { code: KeyCode::Up, .. })
-            | CtEvent::Key(KeyEvent { code: KeyCode::Char('k'), .. }) => {
-                index = if index == 0 { matches.len() - 1 } else { index - 1 };
-            }
-            CtEvent::Key(KeyEvent { code: KeyCode::Down, .. })
-            | CtEvent::Key(KeyEvent { code: KeyCode::Char('j'), .. }) => {
-                index = (index + 1) % matches.len();
-            }
-            CtEvent::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                stdout.execute(MoveToColumn(0)).ok();
-                stdout.execute(Clear(ClearType::FromCursorDown)).ok();
-                println!();
-                return Ok(Some(matches[index]));
-            }
-            CtEvent::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
-                stdout.execute(MoveToColumn(0)).ok();
-                stdout.execute(Clear(ClearType::FromCursorDown)).ok();
-                println!();
-                return Ok(None);
-            }
-            _ => {}
-        }
-    }
+    Ok(selection.map(|idx| matches[idx]))
 }
 
 #[derive(Debug, Clone)]
