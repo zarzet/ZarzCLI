@@ -216,6 +216,9 @@ pub struct Repl {
     config: Config,
     logout_requested: bool,
     pending_command: Arc<Mutex<Option<String>>>,
+    last_interrupt: Option<std::time::Instant>,
+    current_mode: String,
+    status_message: Option<String>,
 }
 
 impl Repl {
@@ -264,7 +267,7 @@ impl Repl {
         self.persist_session_if_needed();
     }
 
-    fn draw_prompt_frame() {
+    fn draw_prompt_frame(&self) {
         let mut out = stdout();
         let width = terminal::size().map(|(w, _)| w as usize).unwrap_or(120);
         let border = "─".repeat(width);
@@ -275,7 +278,19 @@ impl Repl {
         out.queue(Print("\r\n")).ok();
         out.queue(Print("\r\n")).ok();
         out.queue(Print(&border)).ok();
-        out.queue(cursor::MoveUp(1)).ok();
+        out.queue(Print("\r\n")).ok();
+
+        if let Some(msg) = &self.status_message {
+            out.execute(SetForegroundColor(Color::Yellow)).ok();
+            out.queue(Print(msg)).ok();
+            out.execute(ResetColor).ok();
+        } else {
+            out.execute(SetForegroundColor(Color::DarkGrey)).ok();
+            out.queue(Print(format!("  ⏵⏵ Mode: {}", self.current_mode))).ok();
+            out.execute(ResetColor).ok();
+        }
+
+        out.queue(cursor::MoveUp(2)).ok();
         out.queue(cursor::MoveToColumn(0)).ok();
         out.queue(cursor::Show).ok();
         out.flush().ok();
@@ -293,7 +308,10 @@ impl Repl {
         out.queue(cursor::MoveDown(1)).ok();
         out.queue(cursor::MoveToColumn(0)).ok();
         out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
-        out.queue(cursor::MoveUp(2)).ok();
+        out.queue(cursor::MoveDown(1)).ok();
+        out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+        out.queue(cursor::MoveUp(3)).ok();
         out.queue(cursor::MoveToColumn(0)).ok();
         out.queue(cursor::Show).ok();
         out.flush().ok();
@@ -338,6 +356,9 @@ impl Repl {
             config,
             logout_requested: false,
             pending_command: Arc::new(Mutex::new(None)),
+            last_interrupt: None,
+            current_mode: "Auto".to_string(),
+            status_message: None,
         }
     }
 
@@ -358,12 +379,16 @@ impl Repl {
         );
 
         loop {
-            Self::draw_prompt_frame();
+            self.draw_prompt_frame();
             let readline = editor.readline("> ");
 
             match readline {
                 Ok(line) => {
+                    self.last_interrupt = None;
+                    self.status_message = None;
+
                     Self::clear_prompt_frame();
+
                     let line = line.trim();
 
                     if line.is_empty() {
@@ -405,8 +430,8 @@ impl Repl {
                     }
                 }
                 Err(ReadlineError::Interrupted) => {
-                    Self::clear_prompt_frame();
                     if let Some(cmd) = self.take_pending_command() {
+                        Self::clear_prompt_frame();
                         println!("> {}", cmd);
                         editor
                             .add_history_entry(cmd.as_str())
@@ -421,8 +446,22 @@ impl Repl {
 
                         continue;
                     }
-                    println!();
-                    break;
+
+                    let now = std::time::Instant::now();
+                    if let Some(last) = self.last_interrupt {
+                        if now.duration_since(last).as_secs() < 2 {
+                            Self::clear_prompt_frame();
+                            println!();
+                            println!("Exiting...");
+                            break;
+                        }
+                    }
+
+                    Self::clear_prompt_frame();
+                    self.last_interrupt = Some(now);
+                    self.status_message = Some("  Press Ctrl+C again to exit, or continue typing...".to_string());
+
+                    continue;
                 }
                 Err(ReadlineError::Eof) => {
                     Self::clear_prompt_frame();
