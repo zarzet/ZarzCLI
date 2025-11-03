@@ -1694,7 +1694,8 @@ fn print_assistant_message(text: &str, model: &str) -> Result<()> {
 
     println!();
     out.execute(SetForegroundColor(Color::Green))?;
-    print!("● {}:", model_name);
+    out.execute(Print("● "))?;
+    out.execute(Print(format!("{}:", model_name)))?;
     out.execute(ResetColor)?;
     println!();
 
