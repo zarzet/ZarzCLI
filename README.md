@@ -3,31 +3,79 @@
 [![npm version](https://img.shields.io/npm/v/zarz.svg)](https://www.npmjs.com/package/zarz)
 [![npm downloads](https://img.shields.io/npm/dd/zarz.svg)](https://www.npmjs.com/package/zarz)
 [![GitHub release](https://img.shields.io/github/v/release/zarzet/ZarzCLI.svg)](https://github.com/zarzet/ZarzCLI/releases)
-[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Fast AI coding assistant for terminal built with Rust.
+**ZarzCLI** is a blazingly fast AI coding assistant for your terminal, built with Rust for maximum performance. It brings the power of Claude, GPT, and GLM models directly to your command line with intelligent context awareness and autonomous tool execution.
 
-## Installation
+## ✨ Features
 
+### 🚀 Core Capabilities
+- **Interactive Chat** - Real-time streaming responses with multiple AI models
+- **Multi-Provider Support** - Claude (Anthropic), GPT (OpenAI), and GLM (Z.AI)
+- **Bash Tool Calling** - AI can autonomously execute bash commands to understand your codebase
+- **File Operations** - Direct file editing, creation, and management
+- **Smart Context** - Automatic symbol search and relevant file detection
+- **MCP Support** - Model Context Protocol integration for extended capabilities
+- **Cross-Platform** - Works seamlessly on Windows, Linux, and macOS
+
+### 🤖 Intelligent Context Understanding
+
+ZarzCLI v0.3.4+ includes autonomous bash tool execution, allowing AI models to:
+- 🔍 **Search files**: `find . -name "*.rs"` or `rg "pattern"`
+- 📖 **Read contents**: `cat src/main.rs` or `head -n 20 file.py`
+- 🔎 **Grep code**: `grep -r "function_name" src/`
+- 📂 **Navigate structure**: `ls -la src/` or `tree -L 2`
+- 📊 **Check git**: `git log --oneline -10` or `git diff`
+
+The AI automatically decides when to execute commands for better context - no manual `/run` needed!
+
+### 🎨 User Experience
+- **Status Line** - Shows current mode and notifications
+- **Double Ctrl+C** - Confirmation before exit (prevents accidental exits)
+- **Colored Diff Display** - Beautiful file change visualization with context
+- **Persistent Sessions** - Resume previous conversations anytime
+
+## 📦 Installation
+
+### Via NPM (Recommended)
 ```bash
 npm install -g zarz
 ```
 
-## First Run Setup
+### From Source
+```bash
+git clone https://github.com/zarzet/ZarzCLI.git
+cd ZarzCLI
+cargo build --release
+```
+
+## 🚀 Quick Start
+
+### First Run Setup
 
 On first run, you'll be prompted to enter your API keys interactively:
 
 ```bash
 zarz
+```
 
-# Or set manually via environment variable
+Or set manually via environment variables:
+```bash
+# For Anthropic Claude
 export ANTHROPIC_API_KEY=sk-ant-...
+
+# For OpenAI GPT
+export OPENAI_API_KEY=sk-...
+
+# For GLM (Z.AI)
+export GLM_API_KEY=...
+
 zarz
 ```
 
 Your API keys are securely stored in `~/.zarz/config.toml`
 
-## Usage
+### Basic Usage
 
 ```bash
 # Start interactive chat (default)
@@ -36,37 +84,144 @@ zarz
 # Quick one-shot question
 zarz --message "fix this bug"
 
+# Use specific model
+zarz --model claude-sonnet-4-5-20250929
+
 # Manage configuration
 zarz config --show     # Show current config
 zarz config --reset    # Reconfigure API keys
 ```
 
-## Features
+## 🎯 Available Commands
 
-- Interactive chat with AI (Claude, GPT & GLM models)
-- Real-time streaming responses
-- Automatic API key management
-- File operations & code editing
-- Symbol search & context detection
-- MCP (Model Context Protocol) support
-- Cross-platform (Windows, Linux, macOS)
+Once inside the interactive chat:
 
-## Supported AI Providers
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all available commands |
+| `/apply` | Apply pending file changes |
+| `/diff` | Show pending changes with colored diff |
+| `/undo` | Clear pending changes |
+| `/edit <file>` | Load a file for editing |
+| `/search <symbol>` | Search for a symbol in codebase |
+| `/context <query>` | Find relevant files for a query |
+| `/files` | List currently loaded files |
+| `/model <name>` | Switch to a different AI model |
+| `/mcp` | Show MCP servers and available tools |
+| `/resume` | Resume a previous chat session |
+| `/clear` | Clear conversation history |
+| `/exit` | Exit the session |
 
-- **Anthropic Claude** - Best for coding and agents
-- **OpenAI GPT** - Multimodal capabilities
-- **GLM (Z.AI)** - Cost-effective coding with 200K context ($3/month)
+## 🤖 Supported AI Models
 
-See [GLM-PROVIDER.md](GLM-PROVIDER.md) for detailed GLM setup and usage.
+### Anthropic Claude
+Best for coding tasks and autonomous agents:
+- `claude-sonnet-4-5-20250929` (Latest, most capable)
+- `claude-haiku-4-5` (Fast, cost-effective)
+- `claude-opus-4-5` (Most powerful)
 
-## Requirements
+### OpenAI GPT
+Multimodal capabilities with vision:
+- `gpt-5-codex` (Best for coding)
+- `gpt-4o` (Multimodal)
+- `gpt-4-turbo`
 
-- Node.js 14.0.0 or higher
-- Rust toolchain (auto-installed if missing)
-- API key: Anthropic Claude, OpenAI, or GLM (Z.AI)
+### GLM (Z.AI)
+Cost-effective coding with 200K context window:
+- `glm-coder-4-lite` ($3/month subscription)
+- 200,000 token context window
+- Specialized for coding tasks
 
-## License
+See [MODELS.md](MODELS.md) for full model list and [GLM-PROVIDER.md](GLM-PROVIDER.md) for GLM setup.
 
-Proprietary - All rights reserved
+## 🛠️ Advanced Features
 
-© 2025 zarzet. This software is licensed for personal use only.
+### MCP (Model Context Protocol)
+
+ZarzCLI supports MCP servers for extended capabilities. Configure in `~/.zarz/config.toml`:
+
+```toml
+[[mcp_servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
+```
+
+### Bash Tool Integration
+
+AI models can automatically execute bash commands when they need context:
+
+```bash
+> Tell me about the authentication implementation
+
+# AI automatically executes:
+$ find . -name "*auth*" -type f
+$ grep -r "authenticate" src/
+$ cat src/auth/login.rs
+
+# Then provides informed response based on actual codebase
+```
+
+## 📋 Requirements
+
+- **Node.js** 14.0.0 or higher
+- **Rust toolchain** (auto-installed if missing)
+- **API Key** from one of:
+  - Anthropic Claude ([get key](https://console.anthropic.com/))
+  - OpenAI ([get key](https://platform.openai.com/api-keys))
+  - GLM Z.AI ([get key](https://z.ai/))
+
+## 🤝 Contributing
+
+Contributions are welcome! ZarzCLI is now open source under MIT license.
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/zarzet/ZarzCLI.git
+cd ZarzCLI
+
+# Build the project
+cargo build --release
+
+# Run tests
+cargo test
+
+# Install locally
+npm install -g .
+```
+
+### Contribution Guidelines
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+Please ensure:
+- Code compiles without warnings
+- Tests pass
+- Follow existing code style
+- Update documentation as needed
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- Built with [Anthropic Claude API](https://www.anthropic.com/)
+- Powered by [Rust](https://www.rust-lang.org/) for performance
+- MCP protocol by [Anthropic](https://www.anthropic.com/)
+
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/zarzet/ZarzCLI/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/zarzet/ZarzCLI/discussions)
+- **Author**: [@zarzet](https://github.com/zarzet)
+
+---
+
+**Made with ❤️ by zarzet**
