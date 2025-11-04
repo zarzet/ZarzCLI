@@ -51,23 +51,42 @@ impl GlmClient {
     }
 
     pub async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse> {
-        let mut messages = Vec::new();
-        if let Some(system) = &request.system_prompt {
+        let messages = if let Some(msgs) = &request.messages {
+            msgs.clone()
+        } else {
+            let mut messages = Vec::new();
+            if let Some(system) = &request.system_prompt {
+                messages.push(json!({
+                    "role": "system",
+                    "content": system,
+                }));
+            }
             messages.push(json!({
-                "role": "system",
-                "content": system,
+                "role": "user",
+                "content": request.user_prompt,
             }));
-        }
-        messages.push(json!({
-            "role": "user",
-            "content": request.user_prompt,
-        }));
+            messages
+        };
 
-        let payload = json!({
+        let mut payload = json!({
             "model": request.model,
             "max_tokens": request.max_output_tokens,
             "messages": messages,
         });
+
+        if let Some(tools) = &request.tools {
+            let glm_tools: Vec<_> = tools.iter().map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"]
+                    }
+                })
+            }).collect();
+            payload["tools"] = json!(glm_tools);
+        }
 
         // Construct full endpoint URL
         let full_url = format!("{}/chat/completions", self.endpoint);
@@ -95,16 +114,26 @@ impl GlmClient {
             .await
             .context("Failed to decode GLM response")?;
 
-        let text = parsed
-            .choices
-            .into_iter()
-            .find_map(|choice| choice.message.content)
-            .ok_or_else(|| anyhow!("GLM response did not include content"))?;
+        let first_choice = parsed.choices.into_iter().next()
+            .ok_or_else(|| anyhow!("GLM response did not include any choices"))?;
+
+        let text = first_choice.message.content.unwrap_or_default();
+        let mut tool_calls = Vec::new();
+
+        if let Some(calls) = first_choice.message.tool_calls {
+            for call in calls {
+                tool_calls.push(super::ToolCall {
+                    id: call.id,
+                    name: call.function.name,
+                    input: call.function.arguments,
+                });
+            }
+        }
 
         Ok(CompletionResponse {
             text,
-            tool_calls: Vec::new(),
-            stop_reason: None,
+            tool_calls,
+            stop_reason: first_choice.finish_reason,
         })
     }
 
@@ -205,9 +234,25 @@ struct GlmResponse {
 #[derive(Debug, Deserialize)]
 struct GlmChoice {
     message: GlmMessage,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GlmMessage {
     content: Option<String>,
+    tool_calls: Option<Vec<GlmToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlmToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: GlmFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlmFunction {
+    name: String,
+    arguments: serde_json::Value,
 }

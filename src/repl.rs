@@ -43,7 +43,6 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "diff", description: "Show pending changes" },
     CommandInfo { name: "undo", description: "Clear pending changes" },
     CommandInfo { name: "edit", description: "Load a file for editing" },
-    CommandInfo { name: "run", description: "Execute a shell command" },
     CommandInfo { name: "search", description: "Search for a symbol" },
     CommandInfo { name: "context", description: "Find relevant files" },
     CommandInfo { name: "files", description: "List currently loaded files" },
@@ -174,7 +173,6 @@ Available commands the user can use:
 - /diff - Show pending changes
 - /undo - Clear pending changes
 - /edit <file> - Load a file for editing
-- /run <command> - Execute a shell command
 - /search <symbol> - Search for a symbol in the codebase
 - /context <query> - Find relevant files for a query
 - /files - List currently loaded files
@@ -546,7 +544,6 @@ impl Repl {
             "/diff" => self.show_diff(),
             "/undo" => self.undo_changes(),
             "/edit" => self.edit_file(args).await,
-            "/run" => self.run_command(args).await,
             "/search" => self.search_symbol(args).await,
             "/context" => self.find_context(args).await,
             "/files" => self.list_files(),
@@ -638,37 +635,73 @@ impl Repl {
             let mut response = response_result?;
 
             if !response.tool_calls.is_empty() {
-                let mut messages = vec![json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "text",
-                        "text": prompt
-                    }]
-                })];
+                let is_anthropic = self.provider.name() == "anthropic";
 
-                let mut assistant_content = Vec::new();
-                if !response.text.is_empty() {
-                    assistant_content.push(json!({
-                        "type": "text",
-                        "text": response.text
+                let mut messages = if is_anthropic {
+                    vec![json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "text",
+                            "text": prompt
+                        }]
+                    })]
+                } else {
+                    let mut msgs = Vec::new();
+                    if let Some(system) = &request.system_prompt {
+                        msgs.push(json!({
+                            "role": "system",
+                            "content": system
+                        }));
+                    }
+                    msgs.push(json!({
+                        "role": "user",
+                        "content": prompt
+                    }));
+                    msgs
+                };
+
+                if is_anthropic {
+                    let mut assistant_content = Vec::new();
+                    if !response.text.is_empty() {
+                        assistant_content.push(json!({
+                            "type": "text",
+                            "text": response.text
+                        }));
+                    }
+
+                    for tool_call in response.tool_calls.clone() {
+                        assistant_content.push(json!({
+                            "type": "tool_use",
+                            "id": tool_call.id,
+                            "name": tool_call.name,
+                            "input": tool_call.input
+                        }));
+                    }
+
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": assistant_content
+                    }));
+                } else {
+                    let mut openai_tool_calls = Vec::new();
+                    for tool_call in response.tool_calls.clone() {
+                        openai_tool_calls.push(json!({
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.name,
+                                "arguments": tool_call.input.to_string()
+                            }
+                        }));
+                    }
+
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": response.text,
+                        "tool_calls": openai_tool_calls
                     }));
                 }
 
-                for tool_call in response.tool_calls.clone() {
-                    assistant_content.push(json!({
-                        "type": "tool_use",
-                        "id": tool_call.id,
-                        "name": tool_call.name,
-                        "input": tool_call.input
-                    }));
-                }
-
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": assistant_content
-                }));
-
-                let mut tool_result_content = Vec::new();
                 for tool_call in &response.tool_calls {
                     if tool_call.name == "bash" {
                         if let Some(command) = tool_call.input.get("command").and_then(|v| v.as_str()) {
@@ -684,23 +717,30 @@ impl Repl {
                                 result
                             };
 
-                            tool_result_content.push(json!({
-                                "type": "tool_result",
-                                "tool_use_id": tool_call.id,
-                                "content": truncated
-                            }));
+                            if is_anthropic {
+                                let mut tool_result_content = vec![json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_call.id,
+                                    "content": truncated
+                                })];
+                                messages.push(json!({
+                                    "role": "user",
+                                    "content": tool_result_content
+                                }));
+                            } else {
+                                messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": truncated
+                                }));
+                            }
                         }
                     }
                 }
 
-                messages.push(json!({
-                    "role": "user",
-                    "content": tool_result_content
-                }));
-
                 let follow_up_request = CompletionRequest {
                     model: self.model.clone(),
-                    system_prompt: Some(REPL_SYSTEM_PROMPT.to_string()),
+                    system_prompt: if is_anthropic { Some(REPL_SYSTEM_PROMPT.to_string()) } else { None },
                     user_prompt: String::new(),
                     max_output_tokens: self.max_tokens,
                     temperature: self.temperature,
@@ -917,7 +957,6 @@ impl Repl {
         println!("  /diff           - Show pending changes");
         println!("  /undo           - Clear pending changes");
         println!("  /edit <file>    - Load a file for editing");
-        println!("  /run <command>  - Execute a shell command");
         println!("  /search <name>  - Search for a symbol");
         println!("  /context <query>- Find relevant files");
         println!("  /files          - List loaded files");
@@ -992,32 +1031,6 @@ impl Repl {
         self.session.load_file(file_path.clone(), content);
 
         println!("Loaded {} for editing", path);
-
-        Ok(())
-    }
-
-    async fn run_command(&self, command: &str) -> Result<()> {
-        if command.is_empty() {
-            return Err(anyhow!("Usage: /run <command>"));
-        }
-
-        println!("Running: {}", command);
-
-        let result = CommandExecutor::execute(command).await?;
-
-        if !result.stdout.is_empty() {
-            println!("{}", result.stdout);
-        }
-
-        if !result.stderr.is_empty() {
-            eprintln!("{}", result.stderr);
-        }
-
-        if result.success {
-            println!("Command completed successfully (exit code: {})", result.exit_code);
-        } else {
-            println!("Command failed (exit code: {})", result.exit_code);
-        }
 
         Ok(())
     }
