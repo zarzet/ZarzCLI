@@ -41,9 +41,7 @@
   "files": [
     "bin/",
     "scripts/",
-    "README.md",
-    "QUICKSTART.md",
-    "MODELS.md"
+    "README.md"
   ],
   "dependencies": {},
   "devDependencies": {},
