@@ -285,7 +285,7 @@ impl Repl {
             out.queue(Print(msg)).ok();
             out.execute(ResetColor).ok();
         } else {
-            out.execute(SetForegroundColor(Color::DarkGrey)).ok();
+            out.execute(SetForegroundColor(Color::Green)).ok();
             out.queue(Print(format!("  ⏵⏵ Mode: {}", self.current_mode))).ok();
             out.execute(ResetColor).ok();
         }
