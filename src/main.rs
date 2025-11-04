@@ -233,6 +233,8 @@ async fn handle_quick_ask(
         user_prompt,
         max_output_tokens: resolve_max_tokens(),
         temperature: resolve_temperature(),
+        messages: None,
+        tools: None,
     };
 
     let response = provider.complete(&request).await?;
@@ -305,6 +307,8 @@ async fn handle_ask(args: AskArgs, config: &config::Config) -> Result<()> {
         user_prompt,
         max_output_tokens: resolve_max_tokens(),
         temperature: resolve_temperature(),
+        messages: None,
+        tools: None,
     };
 
     let response = provider.complete(&request).await?;
@@ -378,6 +382,8 @@ async fn handle_rewrite(args: RewriteArgs, config: &config::Config) -> Result<()
         user_prompt,
         max_output_tokens: resolve_max_tokens(),
         temperature: resolve_rewrite_temperature(),
+        messages: None,
+        tools: None,
     };
 
     let response = provider.complete(&request).await?;

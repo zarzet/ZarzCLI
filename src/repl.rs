@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
 use crossterm::{cursor, terminal::{self, ClearType}, ExecutableCommand, QueueableCommand};
 use dialoguer::{theme::ColorfulTheme, Select};
 use rustyline::completion::{Completer, Pair};
@@ -28,7 +28,7 @@ use crate::mcp::{McpManager, McpTool};
 use crate::mcp::types::{CallToolResult, ToolContent};
 use crate::providers::{CompletionProvider, CompletionRequest, ProviderClient};
 use crate::session::{MessageRole, Session};
-use serde_json::{self, Value};
+use serde_json::{self, json, Value};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -607,18 +607,113 @@ impl Repl {
             prompt.push_str(&self.session.build_prompt_with_context(true));
             prompt.push_str("Respond as the assistant to the latest user message.");
 
+            let bash_tool = json!({
+                "name": "bash",
+                "description": "Execute bash commands to search files, read file contents, or perform other system operations. Use this to understand the codebase context better.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The bash command to execute (e.g., 'find . -name \"*.rs\"', 'grep -r \"function_name\" src/', 'cat src/main.rs')"
+                        }
+                    },
+                    "required": ["command"]
+                }
+            });
+
             let request = CompletionRequest {
                 model: self.model.clone(),
                 system_prompt: Some(REPL_SYSTEM_PROMPT.to_string()),
-                user_prompt: prompt,
+                user_prompt: prompt.clone(),
                 max_output_tokens: self.max_tokens,
                 temperature: self.temperature,
+                messages: None,
+                tools: Some(vec![bash_tool.clone()]),
             };
 
             let spinner = Spinner::start("Thinking...".to_string());
             let response_result = self.provider.complete(&request).await;
             spinner.stop().await;
-            let response = response_result?;
+            let mut response = response_result?;
+
+            if !response.tool_calls.is_empty() {
+                let mut messages = vec![json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": prompt
+                    }]
+                })];
+
+                let mut assistant_content = Vec::new();
+                if !response.text.is_empty() {
+                    assistant_content.push(json!({
+                        "type": "text",
+                        "text": response.text
+                    }));
+                }
+
+                for tool_call in response.tool_calls.clone() {
+                    assistant_content.push(json!({
+                        "type": "tool_use",
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "input": tool_call.input
+                    }));
+                }
+
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": assistant_content
+                }));
+
+                let mut tool_result_content = Vec::new();
+                for tool_call in &response.tool_calls {
+                    if tool_call.name == "bash" {
+                        if let Some(command) = tool_call.input.get("command").and_then(|v| v.as_str()) {
+                            println!();
+                            stdout().execute(SetForegroundColor(Color::Cyan))?;
+                            println!("  $ {}", command);
+                            stdout().execute(ResetColor)?;
+
+                            let result = execute_bash_command(command)?;
+                            let truncated = if result.len() > 4000 {
+                                format!("{}... (truncated, {} total chars)", &result[..4000], result.len())
+                            } else {
+                                result
+                            };
+
+                            tool_result_content.push(json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_call.id,
+                                "content": truncated
+                            }));
+                        }
+                    }
+                }
+
+                messages.push(json!({
+                    "role": "user",
+                    "content": tool_result_content
+                }));
+
+                let follow_up_request = CompletionRequest {
+                    model: self.model.clone(),
+                    system_prompt: Some(REPL_SYSTEM_PROMPT.to_string()),
+                    user_prompt: String::new(),
+                    max_output_tokens: self.max_tokens,
+                    temperature: self.temperature,
+                    messages: Some(messages),
+                    tools: Some(vec![bash_tool]),
+                };
+
+                let spinner = Spinner::start("Thinking...".to_string());
+                let follow_up_result = self.provider.complete(&follow_up_request).await;
+                spinner.stop().await;
+                response = follow_up_result?;
+            }
+
             let raw_text = response.text;
 
             match parse_mcp_tool_call(&raw_text) {
@@ -1847,55 +1942,137 @@ impl Spinner {
 
 fn print_file_change_summary(path: &Path, before: &str, after: &str) -> Result<()> {
     let mut out = stdout();
-    out.execute(SetForegroundColor(Color::Cyan)).ok();
-    if before.is_empty() {
-        println!("Creating {}", path.display());
-    } else {
-        println!("Changes in {}", path.display());
-    }
-    out.execute(ResetColor).ok();
 
     let diff = TextDiff::from_lines(before, after);
+    let mut additions = 0;
+    let mut removals = 0;
+
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Delete => removals += 1,
+            ChangeTag::Insert => additions += 1,
+            _ => {}
+        }
+    }
+
+    if before.is_empty() {
+        out.execute(SetForegroundColor(Color::Green)).ok();
+        println!("● Create({})", path.display());
+        out.execute(ResetColor).ok();
+        println!("  ⎿ Created {} with {} lines", path.display(), additions);
+    } else {
+        out.execute(SetForegroundColor(Color::Green)).ok();
+        println!("● Update({})", path.display());
+        out.execute(ResetColor).ok();
+        println!("  ⎿ Updated {} with {} addition{} and {} removal{}",
+            path.display(),
+            additions, if additions == 1 { "" } else { "s" },
+            removals, if removals == 1 { "" } else { "s" }
+        );
+    }
+
     let mut old_line = 1usize;
     let mut new_line = 1usize;
-    let mut wrote_any = false;
+    let mut context_before: Vec<(usize, String)> = Vec::new();
+    let max_context = 3;
 
     for change in diff.iter_all_changes() {
         let value = change.value().trim_end_matches('\n');
         match change.tag() {
+            ChangeTag::Equal => {
+                context_before.push((old_line, value.to_string()));
+                if context_before.len() > max_context {
+                    context_before.remove(0);
+                }
+                old_line += 1;
+                new_line += 1;
+            }
             ChangeTag::Delete => {
-                wrote_any = true;
-                print_colored_diff_line('-', old_line, value, Color::Red);
+                for (line_num, text) in &context_before {
+                    print_context_line(*line_num, text);
+                }
+                context_before.clear();
+
+                print_diff_line_with_bg('-', old_line, value, Color::Rgb { r: 60, g: 20, b: 20 })?;
                 old_line += 1;
             }
             ChangeTag::Insert => {
-                wrote_any = true;
-                print_colored_diff_line('+', new_line, value, Color::Green);
-                new_line += 1;
-            }
-            ChangeTag::Equal => {
-                old_line += 1;
+                for (line_num, text) in &context_before {
+                    print_context_line(*line_num, text);
+                }
+                context_before.clear();
+
+                print_diff_line_with_bg('+', new_line, value, Color::Rgb { r: 20, g: 60, b: 20 })?;
                 new_line += 1;
             }
         }
     }
 
-    if !wrote_any {
-        println!("(No textual changes)");
-    }
-
+    println!();
     Ok(())
 }
 
-fn print_colored_diff_line(prefix: char, line_number: usize, text: &str, color: Color) {
+fn print_context_line(line_number: usize, text: &str) {
+    println!("       {:>5}    {}", line_number, text);
+}
+
+fn print_diff_line_with_bg(prefix: char, line_number: usize, text: &str, bg_color: Color) -> Result<()> {
     let mut out = stdout();
-    out.execute(SetForegroundColor(color)).ok();
-    if text.is_empty() {
-        println!("{} {:>5} |", prefix, line_number);
-    } else {
-        println!("{} {:>5} | {}", prefix, line_number, text);
+
+    out.execute(Print(format!("       {:>5} ", line_number)))?;
+
+    let prefix_color = if prefix == '-' { Color::Red } else { Color::Green };
+    out.execute(SetBackgroundColor(bg_color))?;
+    out.execute(SetForegroundColor(prefix_color))?;
+    out.execute(Print(prefix))?;
+
+    if !text.is_empty() {
+        out.execute(SetForegroundColor(Color::White))?;
+        out.execute(Print(format!("  {}", text)))?;
     }
-    out.execute(ResetColor).ok();
+
+    out.execute(ResetColor)?;
+    println!();
+    Ok(())
+}
+
+
+fn execute_bash_command(command: &str) -> Result<String> {
+    use std::process::Command;
+
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(&["/C", command])
+            .output()
+            .context("Failed to execute bash command")?
+    } else {
+        Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .context("Failed to execute bash command")?
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut result = String::new();
+    if !stdout.is_empty() {
+        result.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push_str("\n");
+        }
+        result.push_str("STDERR:\n");
+        result.push_str(&stderr);
+    }
+
+    if result.is_empty() {
+        result = "(command produced no output)".to_string();
+    }
+
+    Ok(result)
 }
 
 fn parse_file_blocks(input: &str) -> HashMap<PathBuf, String> {

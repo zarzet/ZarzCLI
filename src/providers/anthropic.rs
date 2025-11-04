@@ -70,16 +70,25 @@ impl AnthropicClient {
                 serde_json::Value::String(system_prompt.clone()),
             );
         }
-        payload.insert(
-            "messages".to_string(),
-            json!([{
-                "role": "user",
-                "content": [{
-                    "type": "text",
-                    "text": request.user_prompt
-                }]
-            }]),
-        );
+
+        if let Some(tools) = &request.tools {
+            payload.insert("tools".to_string(), serde_json::Value::Array(tools.clone()));
+        }
+
+        if let Some(messages) = &request.messages {
+            payload.insert("messages".to_string(), serde_json::Value::Array(messages.clone()));
+        } else {
+            payload.insert(
+                "messages".to_string(),
+                json!([{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": request.user_prompt
+                    }]
+                }]),
+            );
+        }
 
         let response = self
             .http
@@ -96,14 +105,26 @@ impl AnthropicClient {
             .json()
             .await
             .context("Failed to decode Anthropic response")?;
-        let text = parsed
-            .content
-            .into_iter()
-            .find_map(|block| match block {
-                AnthropicResponseBlock::Text { text, .. } => Some(text),
-            })
-            .ok_or_else(|| anyhow!("Anthropic response did not include text content"))?;
-        Ok(CompletionResponse { text })
+
+        let mut text = String::new();
+        let mut tool_calls = Vec::new();
+
+        for block in parsed.content {
+            match block {
+                AnthropicResponseBlock::Text { text: t } => {
+                    text.push_str(&t);
+                }
+                AnthropicResponseBlock::ToolUse { id, name, input } => {
+                    tool_calls.push(super::ToolCall { id, name, input });
+                }
+            }
+        }
+
+        Ok(CompletionResponse {
+            text,
+            tool_calls,
+            stop_reason: parsed.stop_reason,
+        })
     }
 
     #[allow(dead_code)]
@@ -204,11 +225,18 @@ struct StreamDelta {
 #[derive(Debug, Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicResponseBlock>,
+    stop_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
-enum AnthropicResponseBlock {
+pub enum AnthropicResponseBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }

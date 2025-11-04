@@ -91,7 +91,11 @@ impl OpenAiClient {
             .find_map(|choice| choice.message.content)
             .ok_or_else(|| anyhow!("OpenAI response did not include content"))?;
 
-        Ok(CompletionResponse { text })
+        Ok(CompletionResponse {
+            text,
+            tool_calls: Vec::new(),
+            stop_reason: None,
+        })
     }
 
     #[allow(dead_code)]

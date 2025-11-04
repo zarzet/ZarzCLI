@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
+use serde_json::Value;
 
 use crate::cli::Provider;
 
@@ -16,11 +17,22 @@ pub struct CompletionRequest {
     pub user_prompt: String,
     pub max_output_tokens: u32,
     pub temperature: f32,
+    pub messages: Option<Vec<Value>>,
+    pub tools: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompletionResponse {
     pub text: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
 }
 
 #[allow(dead_code)]
