@@ -4,7 +4,7 @@
   "description": "Fast AI coding assistant for terminal built with Rust",
   "main": "bin/zarz.js",
   "bin": {
-    "zarz": "./bin/zarz.js"
+    "zarz": "bin/zarz.js"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
@@ -26,7 +26,7 @@
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zarzet/zarzcli.git"
+    "url": "git+https://github.com/zarzet/zarzcli.git"
   },
   "private": false,
   "engines": {
