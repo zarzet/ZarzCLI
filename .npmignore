@@ -1,10 +1,11 @@
-# Build artifacts (will be built on user's machine)
+# Build artifacts
 target/
 
 # Git
 .git
 .gitignore
 .gitattributes
+.github/
 
 # IDE
 .vscode/
@@ -34,9 +35,14 @@ WINDOWS.md
 zarz.sh
 zarz.bat
 
+# Rust source code (no longer needed - we ship pre-built binaries)
+# Fallback to source build is removed to keep package size small
+src/
+Cargo.toml
+Cargo.lock
+rust-toolchain.toml
+
 # Keep these:
-# - bin/ (contains zarz.js wrapper)
+# - bin/ (contains zarz.js wrapper and binary)
 # - scripts/ (contains postinstall.js)
-# - src/ (Rust source)
-# - Cargo.toml, Cargo.lock
 # - README.md, QUICKSTART.md, MODELS.md

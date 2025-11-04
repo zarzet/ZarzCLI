@@ -191,6 +191,12 @@ Contributions are welcome! ZarzCLI is now open source under MIT license.
 
 ### Development Setup
 
+For contributors who want to modify the source code:
+
+**Requirements:**
+- Node.js 14.0.0 or higher
+- Rust toolchain ([install from rustup.rs](https://rustup.rs/))
+
 ```bash
 # Clone the repository
 git clone https://github.com/zarzet/ZarzCLI.git
@@ -202,9 +208,11 @@ cargo build --release
 # Run tests
 cargo test
 
-# Install locally
+# Install locally for testing
 npm install -g .
 ```
+
+**Note**: Regular users don't need Rust installed. Pre-built binaries are automatically downloaded during `npm install`.
 
 ### Contribution Guidelines
 

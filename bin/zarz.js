@@ -6,7 +6,6 @@ const fs = require('fs');
 
 // Determine the binary path based on platform
 function getBinaryPath() {
-  const rootDir = path.join(__dirname, '..');
   const platform = process.platform;
 
   let binaryName = 'zarzcli';
@@ -14,44 +13,24 @@ function getBinaryPath() {
     binaryName += '.exe';
   }
 
-  const binaryPath = path.join(rootDir, 'target', 'release', binaryName);
+  // Binary is now in bin/ directory after installation
+  const binaryPath = path.join(__dirname, binaryName);
 
   return binaryPath;
-}
-
-// Check if binary exists, if not, build it
-function ensureBinaryExists(binaryPath) {
-  if (!fs.existsSync(binaryPath)) {
-    console.error('Binary not found. Building...');
-    console.error('This may take a few minutes on first run.');
-
-    const { execSync } = require('child_process');
-    const rootDir = path.join(__dirname, '..');
-
-    try {
-      execSync('cargo build --release', {
-        cwd: rootDir,
-        stdio: 'inherit'
-      });
-    } catch (error) {
-      console.error('Failed to build binary. Make sure Rust and Cargo are installed.');
-      console.error('Install Rust from: https://rustup.rs/');
-      process.exit(1);
-    }
-  }
 }
 
 // Main execution
 function main() {
   const binaryPath = getBinaryPath();
 
-  // Ensure binary exists
-  ensureBinaryExists(binaryPath);
-
-  // Check if binary exists after build attempt
+  // Check if binary exists
   if (!fs.existsSync(binaryPath)) {
-    console.error(`Binary not found at: ${binaryPath}`);
-    console.error('Please run: cargo build --release');
+    console.error('ZarzCLI binary not found!');
+    console.error('');
+    console.error('This usually means the installation did not complete successfully.');
+    console.error('Please try reinstalling:');
+    console.error('  npm install -g zarz');
+    console.error('');
     process.exit(1);
   }
 
