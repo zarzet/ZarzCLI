@@ -1,6 +1,6 @@
 {
   "name": "zarz",
-  "version": "0.3.2-alpha",
+  "version": "0.3.4-alpha",
   "description": "Fast AI coding assistant for terminal built with Rust",
   "main": "bin/zarz.js",
   "bin": {
