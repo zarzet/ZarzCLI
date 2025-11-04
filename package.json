@@ -18,6 +18,7 @@
     "claude",
     "codex",
     "gpt",
+    "glm",
     "anthropic",
     "openai",
     "rust"
@@ -40,9 +41,6 @@
   "files": [
     "bin/",
     "scripts/",
-    "src/",
-    "Cargo.toml",
-    "Cargo.lock",
     "README.md",
     "QUICKSTART.md",
     "MODELS.md"

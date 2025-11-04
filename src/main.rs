@@ -8,6 +8,7 @@ mod intelligence;
 mod repl;
 mod session;
 mod conversation_store;
+mod update;
 
 use std::{
     collections::HashMap,
@@ -119,6 +120,13 @@ async fn run(cli: Cli) -> Result<()> {
         }
 
         println!();
+    }
+
+    // Check for updates (only in interactive mode with banner)
+    if show_banner {
+        if let Ok(Some(new_version)) = update::check_for_updates().await {
+            update::print_update_notification(&new_version);
+        }
     }
 
     // Check if this is a config or MCP command - they don't need API keys

@@ -6,7 +6,7 @@ license = "MIT"
 authors = ["zarzet"]
 description = "Fast AI coding assistant for terminal built with Rust"
 repository = "https://github.com/zarzet/ZarzCLI"
-keywords = ["ai", "cli", "coding-assistant", "claude", "gpt"]
+keywords = ["ai", "cli", "coding-assistant", "claude", "gpt", "glm"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
