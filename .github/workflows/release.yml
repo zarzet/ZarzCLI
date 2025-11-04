@@ -78,6 +78,8 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -86,21 +88,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - name: Display structure of downloaded files
-        run: ls -R artifacts
+        run: ls -lah artifacts
 
       - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/zarzcli-linux-x86_64/zarzcli-linux-x86_64
-            artifacts/zarzcli-windows-x86_64.exe/zarzcli-windows-x86_64.exe
-            artifacts/zarzcli-macos-x86_64/zarzcli-macos-x86_64
-            artifacts/zarzcli-macos-aarch64/zarzcli-macos-aarch64
+          files: artifacts/*
           draft: false
           prerelease: false
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_unmatched_files: true
