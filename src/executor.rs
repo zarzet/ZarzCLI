@@ -5,6 +5,7 @@ use tokio::process::Command;
 
 pub struct CommandExecutor;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CommandResult {
     pub stdout: String,
@@ -14,6 +15,7 @@ pub struct CommandResult {
 }
 
 impl CommandExecutor {
+    #[allow(dead_code)]
     pub async fn execute(command: &str) -> Result<CommandResult> {
         let (shell, flag) = if cfg!(target_os = "windows") {
             ("cmd", "/C")

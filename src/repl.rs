@@ -22,7 +22,6 @@ use std::sync::{
 use crate::cli::Provider;
 use crate::conversation_store::{ConversationStore, ConversationSummary};
 use crate::config::Config;
-use crate::executor::CommandExecutor;
 use crate::fs_ops::FileSystemOps;
 use crate::mcp::{McpManager, McpTool};
 use crate::mcp::types::{CallToolResult, ToolContent};
@@ -729,7 +728,7 @@ impl Repl {
                             };
 
                             if is_anthropic {
-                                let mut tool_result_content = vec![json!({
+                                let tool_result_content = vec![json!({
                                     "type": "tool_result",
                                     "tool_use_id": tool_call.id,
                                     "content": truncated

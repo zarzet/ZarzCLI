@@ -25,6 +25,7 @@ pub struct CompletionRequest {
 pub struct CompletionResponse {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
+    #[allow(dead_code)]
     pub stop_reason: Option<String>,
 }
 
