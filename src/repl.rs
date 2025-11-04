@@ -162,6 +162,17 @@ You are an interactive CLI tool that helps users with software engineering tasks
 
 IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes.
 
+## Bash Tool for Context Understanding
+
+You have access to a `bash` tool that allows you to execute shell commands to understand the codebase better. Use this tool proactively to:
+- Search for files: `find . -name "*.rs"` or `find . -type f -name "pattern"`
+- Search code content: `grep -r "function_name" src/` or `rg "pattern" --type rust`
+- Read file contents: `cat path/to/file.rs` or `head -n 20 file.py`
+- List directory structure: `ls -la src/` or `tree -L 2`
+- Check git status: `git log --oneline -10` or `git diff`
+
+IMPORTANT: Use the bash tool whenever you need to understand the codebase structure, find files, or read file contents. This helps you provide accurate and contextual responses.
+
 When making file changes, use code fences in this exact format:
 ```file:relative/path.rs
 <entire file content>
@@ -740,7 +751,7 @@ impl Repl {
 
                 let follow_up_request = CompletionRequest {
                     model: self.model.clone(),
-                    system_prompt: if is_anthropic { Some(REPL_SYSTEM_PROMPT.to_string()) } else { None },
+                    system_prompt: Some(REPL_SYSTEM_PROMPT.to_string()),
                     user_prompt: String::new(),
                     max_output_tokens: self.max_tokens,
                     temperature: self.temperature,
