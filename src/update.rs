@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 
-const CURRENT_VERSION: &str = "0.3.4-alpha";
+const CURRENT_VERSION: &str = "0.3.5-alpha";
 const PACKAGE_NAME: &str = "zarz";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 
