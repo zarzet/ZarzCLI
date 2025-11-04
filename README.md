@@ -127,17 +127,15 @@ Once inside the interactive chat:
 Best for coding tasks and autonomous agents:
 - `claude-sonnet-4-5-20250929` (Latest, most capable)
 - `claude-haiku-4-5` (Fast, cost-effective)
-- `claude-opus-4-5` (Most powerful)
+- `claude-opus-4-1` (Most powerful)
 
 ### OpenAI GPT
-Multimodal capabilities with vision:
+Optimized for coding tasks:
 - `gpt-5-codex` (Best for coding)
-- `gpt-4o` (Multimodal)
-- `gpt-4-turbo`
 
 ### GLM (Z.AI)
 Cost-effective coding with 200K context window:
-- `glm-coder-4-lite` ($3/month subscription)
+- `glm-4.6` ($3/month subscription)
 - 200,000 token context window
 - Specialized for coding tasks
 

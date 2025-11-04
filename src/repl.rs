@@ -972,7 +972,7 @@ impl Repl {
         println!("  /files          - List loaded files");
         println!("  /model <name>   - Switch to a different AI model");
         println!("                    Examples: claude-sonnet-4-5-20250929, claude-haiku-4-5,");
-        println!("                              gpt-5-codex, gpt-4o");
+        println!("                              gpt-5-codex, glm-4.6");
         println!("  /mcp            - Show MCP servers and available tools");
         println!("  /resume         - Resume a previous chat session");
         println!("  /clear          - Clear conversation history");
@@ -1291,8 +1291,6 @@ impl Repl {
             println!();
             println!("  OpenAI:");
             println!("    gpt-5-codex                      - Optimized for coding");
-            println!("    gpt-4o                           - Multimodal");
-            println!("    gpt-4-turbo                      - Fast and efficient");
             println!();
             println!("  GLM (Z.AI - International):");
             println!("    glm-4.6                          - Best for coding (200K context)");
@@ -1829,10 +1827,6 @@ fn get_model_display_name(model: &str) -> String {
         "Haiku".to_string()
     } else if model.starts_with("gpt-5-codex") {
         "GPT-5 Codex".to_string()
-    } else if model.starts_with("gpt-4o") {
-        "GPT-4o".to_string()
-    } else if model.starts_with("gpt-4-turbo") {
-        "GPT-4 Turbo".to_string()
     } else if model.starts_with("glm-4.6") {
         "GLM-4.6".to_string()
     } else if model.starts_with("glm-4.5") {

@@ -41,7 +41,7 @@ pub async fn check_for_updates() -> Result<Option<String>> {
 
 pub fn print_update_notification(new_version: &str) {
     println!("\n╭─────────────────────────────────────────────────────────╮");
-    println!("│  📦 Update Available!                                   │");
+    println!("│  Update Available!                                      │");
     println!("│                                                         │");
     println!("│  Current version: {}                            │", CURRENT_VERSION);
     println!("│  Latest version:  {}                            │", new_version);
