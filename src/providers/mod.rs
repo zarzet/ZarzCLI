@@ -1,8 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
-use std::pin::Pin;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::pin::Pin;
 
 use crate::cli::Provider;
 
@@ -19,6 +20,7 @@ pub struct CompletionRequest {
     pub temperature: f32,
     pub messages: Option<Vec<Value>>,
     pub tools: Option<Vec<Value>>,
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,26 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
 }
 
 #[allow(dead_code)]

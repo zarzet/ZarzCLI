@@ -1,3 +1,4 @@
+mod auth;
 mod cli;
 mod config;
 mod mcp;
@@ -9,6 +10,7 @@ mod repl;
 mod session;
 mod conversation_store;
 mod update;
+mod tools;
 
 use std::{
     collections::HashMap,
@@ -21,7 +23,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use dialoguer::Confirm;
-use providers::{CompletionProvider, CompletionRequest, ProviderClient};
+use providers::{CompletionProvider, CompletionRequest, ProviderClient, ReasoningEffort};
 use similar::{ChangeTag, TextDiff};
 
 use crate::cli::{AskArgs, ChatArgs, Cli, Commands, CommonModelArgs, ConfigArgs, McpArgs, McpCommands, Provider, RewriteArgs};
@@ -33,7 +35,7 @@ const DEFAULT_MODEL_ANTHROPIC: &str = "claude-sonnet-4-5-20250929";
 const DEFAULT_MODEL_OPENAI: &str = "gpt-5-codex";
 const DEFAULT_MODEL_GLM: &str = "glm-4.6";
 
-const DEFAULT_SYSTEM_PROMPT: &str = r#"You are ZarzCLI, Fapzarz's official CLI for Claude and Codex.
+const DEFAULT_SYSTEM_PROMPT: &str = r#"You are ZarzCLI, an AI coding assistant for the terminal.
 
 You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -141,7 +143,7 @@ async fn run(cli: Cli) -> Result<()> {
     }
 
     // Load or create configuration for all other commands (they need API keys)
-    let config = match config::Config::load() {
+    let mut config = match config::Config::load() {
         Ok(cfg) => {
             if !cfg.has_api_key() {
                 // No API keys configured, run interactive setup
@@ -156,7 +158,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
     };
 
-    config.apply_to_env();
+    auth::prepare_openai_environment(&mut config).await?;
 
     // If message flag is provided, run in ask mode (one-shot)
     if let Some(message) = cli.message {
@@ -234,7 +236,12 @@ async fn handle_quick_ask(
         Provider::Glm => config.get_glm_key(),
     };
 
-    let provider = ProviderClient::new(provider_kind, api_key, endpoint, timeout)?;
+    let provider = ProviderClient::new(provider_kind.clone(), api_key, endpoint, timeout)?;
+    let reasoning_effort = if provider_kind == Provider::OpenAi {
+        config.get_openai_reasoning_effort()
+    } else {
+        None
+    };
     let request = CompletionRequest {
         model,
         system_prompt: Some(system_prompt),
@@ -243,6 +250,7 @@ async fn handle_quick_ask(
         temperature: resolve_temperature(),
         messages: None,
         tools: None,
+        reasoning_effort,
     };
 
     let response = provider.complete(&request).await?;
@@ -308,7 +316,12 @@ async fn handle_ask(args: AskArgs, config: &config::Config) -> Result<()> {
         Provider::Glm => config.get_glm_key(),
     };
 
-    let provider = ProviderClient::new(provider_kind, api_key, endpoint, timeout)?;
+    let provider = ProviderClient::new(provider_kind.clone(), api_key, endpoint, timeout)?;
+    let reasoning_effort = if provider_kind == Provider::OpenAi {
+        config.get_openai_reasoning_effort()
+    } else {
+        None
+    };
     let request = CompletionRequest {
         model,
         system_prompt: Some(system_prompt),
@@ -317,6 +330,7 @@ async fn handle_ask(args: AskArgs, config: &config::Config) -> Result<()> {
         temperature: resolve_temperature(),
         messages: None,
         tools: None,
+        reasoning_effort,
     };
 
     let response = provider.complete(&request).await?;
@@ -383,7 +397,12 @@ async fn handle_rewrite(args: RewriteArgs, config: &config::Config) -> Result<()
         Provider::Glm => config.get_glm_key(),
     };
 
-    let provider = ProviderClient::new(provider_kind, api_key, endpoint, timeout)?;
+    let provider = ProviderClient::new(provider_kind.clone(), api_key, endpoint, timeout)?;
+    let reasoning_effort = if provider_kind == Provider::OpenAi {
+        config.get_openai_reasoning_effort()
+    } else {
+        None
+    };
     let request = CompletionRequest {
         model,
         system_prompt: Some(system_prompt),
@@ -392,6 +411,7 @@ async fn handle_rewrite(args: RewriteArgs, config: &config::Config) -> Result<()
         temperature: resolve_rewrite_temperature(),
         messages: None,
         tools: None,
+        reasoning_effort,
     };
 
     let response = provider.complete(&request).await?;
@@ -538,7 +558,39 @@ async fn handle_chat(args: ChatArgs, config: &config::Config) -> Result<()> {
 }
 
 async fn handle_config(args: ConfigArgs) -> Result<()> {
-    let ConfigArgs { reset, show } = args;
+    let ConfigArgs { reset, show, login_chatgpt } = args;
+
+    if login_chatgpt {
+        let mut config = config::Config::load().unwrap_or_else(|_| config::Config::default());
+        let auth::ChatGptLoginResult {
+            oauth_tokens,
+            api_key,
+            project_id,
+            organization_id,
+            account_id,
+        } = auth::login_with_chatgpt().await?;
+
+        // Store OAuth tokens (always)
+        config.openai_oauth_tokens = Some(oauth_tokens);
+        config.openai_project_id = project_id;
+        config.openai_organization_id = organization_id;
+        config.openai_chatgpt_account_id = account_id;
+
+        // Store API key if we got one
+        if let Some(api_key) = api_key {
+            config.openai_api_key = Some(api_key);
+            println!("\n[OK] Stored OAuth tokens and API key from ChatGPT login.");
+        } else {
+            println!("\n[OK] Stored OAuth tokens from ChatGPT login.");
+            println!("   (Using OAuth access token for API calls)");
+        }
+
+        config.save()?;
+        auth::prepare_openai_environment(&mut config).await?;
+        println!("Saved credentials to {}", config::Config::config_path()?.display());
+        println!("\nYou can now use OpenAI models with: zarz");
+        return Ok(());
+    }
 
     if show {
         let config = config::Config::load()?;
@@ -559,21 +611,54 @@ async fn handle_config(args: ConfigArgs) -> Result<()> {
             println!("✗ OpenAI API key: not configured");
         }
 
+        if config.openai_oauth_tokens.is_some() {
+            println!("✓ OpenAI ChatGPT OAuth: configured");
+        } else {
+            println!("✗ OpenAI ChatGPT OAuth: not configured");
+        }
+
+        if let Some(account) = &config.openai_chatgpt_account_id {
+            println!("ChatGPT account ID: {}", account);
+        } else {
+            println!("ChatGPT account ID: not set");
+        }
+
+        if let Some(project) = &config.openai_project_id {
+            println!("OpenAI project ID: {}", project);
+        } else {
+            println!("OpenAI project ID: not set");
+        }
+
+        if let Some(org) = &config.openai_organization_id {
+            println!("OpenAI organization ID: {}", org);
+        } else {
+            println!("OpenAI organization ID: not set");
+        }
+
+        match config.get_openai_reasoning_effort() {
+            None => println!("OpenAI reasoning effort: Auto (model default: medium)"),
+            Some(ReasoningEffort::Minimal) => println!("OpenAI reasoning effort: minimal"),
+            Some(ReasoningEffort::Low) => println!("OpenAI reasoning effort: low"),
+            Some(ReasoningEffort::Medium) => println!("OpenAI reasoning effort: medium"),
+            Some(ReasoningEffort::High) => println!("OpenAI reasoning effort: high"),
+        }
+
         println!();
         println!("Run 'zarz config --reset' to reconfigure your API keys");
+        println!("Run 'zarz config --login-chatgpt' to fetch a key via ChatGPT OAuth.");
 
         return Ok(());
     }
 
     if reset {
         println!("Resetting configuration...\n");
-        let config = config::Config::interactive_setup()?;
-        config.apply_to_env();
+        let mut config = config::Config::interactive_setup()?;
+        auth::prepare_openai_environment(&mut config).await?;
         return Ok(());
     }
 
-    let config = config::Config::interactive_setup()?;
-    config.apply_to_env();
+    let mut config = config::Config::interactive_setup()?;
+    auth::prepare_openai_environment(&mut config).await?;
     Ok(())
 }
 
@@ -629,7 +714,7 @@ async fn handle_mcp(args: McpArgs) -> Result<()> {
             config.add_server(name.clone(), server_config);
             config.save()?;
 
-            println!("✅ Added MCP server: {}", name);
+            println!("[OK] Added MCP server: {}", name);
             println!("Configuration saved to: {}", McpConfig::config_path()?.display());
             Ok(())
         }
@@ -716,7 +801,7 @@ async fn handle_mcp(args: McpArgs) -> Result<()> {
 
             if config.remove_server(&name) {
                 config.save()?;
-                println!("✅ Removed MCP server: {}", name);
+                println!("[OK] Removed MCP server: {}", name);
             } else {
                 println!("Server '{}' not found", name);
             }

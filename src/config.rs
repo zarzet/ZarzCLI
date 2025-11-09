@@ -6,6 +6,16 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+use crate::providers::ReasoningEffort;
+
+/// OAuth tokens from ChatGPT login
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub id_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -14,6 +24,17 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub glm_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_reasoning_effort: Option<ReasoningEffort>,
+    /// OAuth tokens from ChatGPT login (alternative to API key)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_oauth_tokens: Option<OAuthTokens>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_organization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_chatgpt_account_id: Option<String>,
 }
 
 impl Config {
@@ -60,9 +81,17 @@ impl Config {
         Ok(())
     }
 
-    /// Check if at least one API key is configured
+    /// Check if at least one API key or OAuth token is configured
     pub fn has_api_key(&self) -> bool {
-        self.anthropic_api_key.is_some() || self.openai_api_key.is_some() || self.glm_api_key.is_some()
+        self.anthropic_api_key.is_some()
+            || self.openai_api_key.is_some()
+            || self.openai_oauth_tokens.is_some()
+            || self.glm_api_key.is_some()
+    }
+
+    /// Check if OpenAI is configured (either API key or OAuth)
+    pub fn has_openai_auth(&self) -> bool {
+        self.openai_api_key.is_some() || self.openai_oauth_tokens.is_some()
     }
 
     /// Interactive setup to get API keys from user
@@ -84,6 +113,10 @@ impl Config {
         println!(
             "{}\n",
             "You can configure additional providers later with `zarz config --reset`.".with(Color::DarkGrey)
+        );
+        println!(
+            "{}\n",
+            "Prefer logging in with ChatGPT instead? Use `zarz config --login-chatgpt` to run the OAuth flow.".with(Color::DarkGrey)
         );
 
         let options = vec![
@@ -129,7 +162,7 @@ impl Config {
         config.save()?;
         println!(
             "{} {}\n",
-            "✅".with(Color::Green),
+            "[OK]".with(Color::Green),
             format!(
                 "Configuration saved to {}",
                 Self::config_path()?.display()
@@ -195,12 +228,16 @@ impl Config {
             .or_else(|| self.glm_api_key.clone())
     }
 
+    pub fn get_openai_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.openai_reasoning_effort
+    }
+
     /// Get default provider based on available API keys
-    /// Priority: Anthropic > OpenAI > GLM
+    /// Priority: Anthropic > OpenAI (API key or OAuth) > GLM
     pub fn get_default_provider(&self) -> Option<crate::cli::Provider> {
         if self.get_anthropic_key().is_some() {
             Some(crate::cli::Provider::Anthropic)
-        } else if self.get_openai_key().is_some() {
+        } else if self.has_openai_auth() {
             Some(crate::cli::Provider::OpenAi)
         } else if self.get_glm_key().is_some() {
             Some(crate::cli::Provider::Glm)
@@ -216,11 +253,43 @@ impl Config {
                 unsafe { std::env::set_var("ANTHROPIC_API_KEY", key); }
             }
         }
+
+        // For OpenAI: prefer explicit API key, otherwise use OAuth access token
         if let Some(key) = &self.openai_api_key {
             if std::env::var("OPENAI_API_KEY").is_err() {
                 unsafe { std::env::set_var("OPENAI_API_KEY", key); }
             }
+        } else if let Some(tokens) = &self.openai_oauth_tokens {
+            // Always export the latest access token so refreshed values propagate
+            unsafe { std::env::set_var("OPENAI_API_KEY", &tokens.access_token); }
+            unsafe {
+                std::env::set_var(
+                    "OPENAI_API_URL",
+                    "https://chatgpt.com/backend-api/codex/responses",
+                );
+                std::env::set_var(
+                    "OPENAI_CHAT_API_URL",
+                    "https://chatgpt.com/backend-api/chat/completions",
+                );
+            }
+
+            if let Some(account) = &self.openai_chatgpt_account_id {
+                unsafe { std::env::set_var("CHATGPT_ACCOUNT_ID", account); }
+            }
         }
+
+        if std::env::var("OPENAI_ORGANIZATION").is_err() {
+            if let Some(org) = &self.openai_organization_id {
+                unsafe { std::env::set_var("OPENAI_ORGANIZATION", org); }
+            }
+        }
+
+        if std::env::var("OPENAI_PROJECT").is_err() {
+            if let Some(project) = &self.openai_project_id {
+                unsafe { std::env::set_var("OPENAI_PROJECT", project); }
+            }
+        }
+
         if let Some(key) = &self.glm_api_key {
             if std::env::var("GLM_API_KEY").is_err() {
                 unsafe { std::env::set_var("GLM_API_KEY", key); }
@@ -236,6 +305,18 @@ impl Config {
             removed = true;
         }
         if self.openai_api_key.take().is_some() {
+            removed = true;
+        }
+        if self.openai_oauth_tokens.take().is_some() {
+            removed = true;
+        }
+        if self.openai_project_id.take().is_some() {
+            removed = true;
+        }
+        if self.openai_organization_id.take().is_some() {
+            removed = true;
+        }
+        if self.openai_chatgpt_account_id.take().is_some() {
             removed = true;
         }
         if self.glm_api_key.take().is_some() {

@@ -99,6 +99,7 @@ zarz --model claude-sonnet-4-5-20250929
 # Manage configuration
 zarz config --show     # Show current config
 zarz config --reset    # Reconfigure API keys
+zarz config --login-chatgpt  # Sign in via ChatGPT OAuth to fetch an OpenAI key
 ```
 
 ## Available Commands
@@ -116,6 +117,7 @@ Once inside the interactive chat:
 | `/context <query>` | Find relevant files for a query |
 | `/files` | List currently loaded files |
 | `/model <name>` | Switch to a different AI model |
+| `/login` | Open auth wizard (API keys or ChatGPT OAuth) |
 | `/mcp` | Show MCP servers and available tools |
 | `/resume` | Resume a previous chat session |
 | `/clear` | Clear conversation history |
@@ -129,9 +131,20 @@ Best for coding tasks and autonomous agents:
 - `claude-haiku-4-5` (Fast, cost-effective)
 - `claude-opus-4-1` (Most powerful)
 
-### OpenAI GPT
-Optimized for coding tasks:
-- `gpt-5-codex` (Best for coding)
+### OpenAI GPT (ChatGPT OAuth)
+Run `zarz config --login-chatgpt` to fetch an OpenAI key, then choose any of these GPT‑5 variants optimized for OAuth access:
+- `gpt-5-codex` – Default coding agent
+- `gpt-5-codex-low` – Lower reasoning effort
+- `gpt-5-codex-medium` – Balanced reasoning depth
+- `gpt-5-codex-high` – High reasoning effort with detailed summaries
+- `gpt-5-minimal` – Minimal reasoning, terse responses
+- `gpt-5-low` – Low-effort general GPT-5
+- `gpt-5-medium` – Balanced GPT-5 experience
+- `gpt-5-high` – High reasoning-effort GPT-5
+- `gpt-5-mini` – Lightweight GPT-5 for quick tasks
+- `gpt-5-nano` – Fastest GPT-5 tier with minimal reasoning
+
+When you run `/model gpt-5-*`, ZarzCLI now prompts you to pick a **reasoning effort** (Auto, Minimal, Low, Medium, High). The choice is saved to `~/.zarz/config.toml` and applied to every Responses API call along with `text.verbosity = "medium"` and `include = ["reasoning.encrypted_content"]`, matching the Codex OAuth defaults.
 
 ### GLM (Z.AI)
 Cost-effective coding with 200K context window:

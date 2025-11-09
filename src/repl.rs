@@ -18,16 +18,20 @@ use std::sync::{
     Arc,
     Mutex,
 };
+use std::time::{Duration as StdDuration, Instant};
 
+use crate::auth;
 use crate::cli::Provider;
-use crate::conversation_store::{ConversationStore, ConversationSummary};
 use crate::config::Config;
+use crate::conversation_store::{ConversationStore, ConversationSummary};
 use crate::fs_ops::FileSystemOps;
-use crate::mcp::{McpManager, McpTool};
 use crate::mcp::types::{CallToolResult, ToolContent};
-use crate::providers::{CompletionProvider, CompletionRequest, ProviderClient};
-use crate::session::{MessageRole, Session};
+use crate::mcp::{McpManager, McpTool};
+use crate::providers::{CompletionProvider, CompletionRequest, ProviderClient, ReasoningEffort, ToolCall};
+use crate::session::{MessageMetadata, MessageRole, Session};
+use crate::tools::{ToolExecutionContext, ToolRegistry};
 use serde_json::{self, json, Value};
+use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -49,8 +53,22 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "mcp", description: "Show MCP servers and available tools" },
     CommandInfo { name: "resume", description: "Resume a previous chat session" },
     CommandInfo { name: "clear", description: "Clear conversation history" },
+    CommandInfo { name: "login", description: "Configure API keys or sign in" },
     CommandInfo { name: "logout", description: "Remove stored API keys and sign out" },
     CommandInfo { name: "exit", description: "Exit the session" },
+];
+
+const OPENAI_OAUTH_MODELS: &[(&str, &str)] = &[
+    ("gpt-5-codex", "Optimized for coding (default)"),
+    ("gpt-5-codex-low", "Lower reasoning effort; cheaper via OAuth"),
+    ("gpt-5-codex-medium", "Balanced reasoning depth"),
+    ("gpt-5-codex-high", "High reasoning effort with detailed summaries"),
+    ("gpt-5-minimal", "Strictly minimal reasoning, low verbosity"),
+    ("gpt-5-low", "Low effort general GPT-5 variant"),
+    ("gpt-5-medium", "Balanced GPT-5 variant"),
+    ("gpt-5-high", "High reasoning effort GPT-5"),
+    ("gpt-5-mini", "Lightweight GPT-5 for quick tasks"),
+    ("gpt-5-nano", "Fastest GPT-5 option with minimal reasoning"),
 ];
 
 #[derive(Clone, Default)]
@@ -155,7 +173,7 @@ impl Validator for CommandHelper {
     }
 }
 
-const REPL_SYSTEM_PROMPT: &str = r#"You are ZarzCLI, Fapzarz's official CLI for Claude and Codex.
+const REPL_SYSTEM_PROMPT: &str = r#"You are ZarzCLI, an AI coding assistant for the terminal.
 
 You are an interactive CLI tool that helps users with software engineering tasks.
 
@@ -163,14 +181,21 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
 
 ## Bash Tool for Context Understanding
 
-You have access to a `bash` tool that allows you to execute shell commands to understand the codebase better. Use this tool proactively to:
+You have access to a `bash` tool for executing shell commands when needed. Use it ONLY when necessary:
 - Search for files: `find . -name "*.rs"` or `find . -type f -name "pattern"`
 - Search code content: `grep -r "function_name" src/` or `rg "pattern" --type rust`
 - Read file contents: `cat path/to/file.rs` or `head -n 20 file.py`
 - List directory structure: `ls -la src/` or `tree -L 2`
 - Check git status: `git log --oneline -10` or `git diff`
 
-IMPORTANT: Use the bash tool whenever you need to understand the codebase structure, find files, or read file contents. This helps you provide accurate and contextual responses.
+CRITICAL TOOL USAGE RULES:
+- Use tools ONLY when you genuinely need more information to answer the user
+- If you can answer based on existing context, DO NOT use tools
+- NEVER run the same command twice - all previous outputs are in your context (duplicates will be blocked immediately)
+- IMPORTANT: After using 1-3 tools, you MUST provide a text response explaining what you found
+- Do NOT chain multiple tool calls without explaining your findings to the user
+- If a command fails, explain the issue instead of retrying
+- You will be forcibly stopped after 3 consecutive tool calls without text responses
 
 When making file changes, use code fences in this exact format:
 ```file:relative/path.rs
@@ -192,6 +217,15 @@ Available commands the user can use:
 - /clear - Clear conversation history
 - /exit - Exit the session
 
+Response Priority and Thinking Pattern:
+1. If you can answer the user's question with existing information, do so immediately WITHOUT using tools
+2. Only use tools when you genuinely lack critical information needed to answer
+3. After each tool call (or at most 2-3 tool calls), you MUST provide a text response explaining:
+   - What information you found
+   - How it relates to the user's question
+   - What you plan to do next (if more investigation is needed)
+4. This "think out loud" pattern helps the user understand your process and prevents endless tool loops
+
 Tone and style:
 - Only use emojis if the user explicitly requests it
 - Responses should be short and concise
@@ -206,9 +240,15 @@ Conversation format:
 - File changes are applied automatically; never instruct the user to run /apply or similar commands.
 
 MCP tool usage:
-- When the prompt lists available MCP tools, you may request one by replying exactly: CALL_MCP_TOOL server=<server_name> tool=<tool_name> args=<json_object>
+- When the prompt lists available MCP tools, call them directly using the tool name shown to you (e.g., `mcp__server__tool`). If function calling becomes unavailable, you may fall back to emitting `CALL_MCP_TOOL server=<server_name> tool=<tool_name> args=<json_object>`.
 - The JSON must be minified on a single line. Use {} when no arguments are required.
-- Do not include any additional text when making a tool request. Wait for Tool[...] messages that show the results, then continue the conversation.
+- You can provide explanation text before and after the tool call on separate lines
+- Example (fallback):
+  "I'll search for that information.
+
+  CALL_MCP_TOOL server=firecrawl tool=firecrawl_search args={"query":"example"}
+
+  This will help me find the answer."
 "#;
 
 pub struct Repl {
@@ -227,6 +267,7 @@ pub struct Repl {
     last_interrupt: Option<std::time::Instant>,
     current_mode: String,
     status_message: Option<String>,
+    tool_registry: ToolRegistry,
 }
 
 impl Repl {
@@ -270,9 +311,174 @@ impl Repl {
             .and_then(|mut guard| guard.take())
     }
 
+    fn refresh_provider(&mut self) -> Result<()> {
+        let api_key = match self.provider_kind {
+            Provider::Anthropic => self.config.get_anthropic_key(),
+            Provider::OpenAi => self.config.get_openai_key(),
+            Provider::Glm => self.config.get_glm_key(),
+        };
+        self.provider = ProviderClient::new(
+            self.provider_kind.clone(),
+            api_key,
+            self.endpoint.clone(),
+            self.timeout,
+        )?;
+        Ok(())
+    }
+
+    fn current_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        if self.provider_kind == Provider::OpenAi {
+            self.config.get_openai_reasoning_effort()
+        } else {
+            None
+        }
+    }
+
+    fn reasoning_effort_label(effort: Option<ReasoningEffort>) -> &'static str {
+        match effort {
+            None => "Auto (model default: medium)",
+            Some(ReasoningEffort::Minimal) => "Minimal",
+            Some(ReasoningEffort::Low) => "Low",
+            Some(ReasoningEffort::Medium) => "Medium",
+            Some(ReasoningEffort::High) => "High",
+        }
+    }
+
+    fn prompt_openai_reasoning_effort(&mut self) -> Result<()> {
+        let current = self.config.get_openai_reasoning_effort();
+        let options = vec![
+            "Auto (model default: medium)",
+            "Minimal",
+            "Low",
+            "Medium",
+            "High",
+        ];
+        let default_index = match current {
+            None => 0,
+            Some(ReasoningEffort::Minimal) => 1,
+            Some(ReasoningEffort::Low) => 2,
+            Some(ReasoningEffort::Medium) => 3,
+            Some(ReasoningEffort::High) => 4,
+        };
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select reasoning effort for OpenAI models")
+            .items(&options)
+            .default(default_index)
+            .interact()?;
+
+        let new_setting = match selection {
+            0 => None,
+            1 => Some(ReasoningEffort::Minimal),
+            2 => Some(ReasoningEffort::Low),
+            3 => Some(ReasoningEffort::Medium),
+            4 => Some(ReasoningEffort::High),
+            _ => current,
+        };
+
+        if new_setting != current {
+            self.config.openai_reasoning_effort = new_setting;
+            self.config.save()?;
+            println!(
+                "OpenAI reasoning effort set to {}",
+                Self::reasoning_effort_label(new_setting)
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn login_wizard(&mut self) -> Result<()> {
+        println!("\nAuthentication options:");
+        let options = vec![
+            "Configure API keys manually",
+            "Sign in with ChatGPT (OAuth for OpenAI)",
+            "Cancel",
+        ];
+
+        let choice = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose how you want to authenticate ZarzCLI")
+            .items(&options)
+            .default(0)
+            .interact()?;
+
+        match choice {
+            0 => {
+                println!("Launching interactive setup...\n");
+                let mut config = Config::interactive_setup()?;
+                auth::prepare_openai_environment(&mut config).await?;
+                self.config = config;
+                if let Err(err) = self.refresh_provider() {
+                    eprintln!("Warning: Could not refresh provider: {err}");
+                }
+                println!("API keys updated for this session.");
+            }
+            1 => {
+                println!("Opening browser for ChatGPT login...\n");
+                let auth::ChatGptLoginResult {
+                    oauth_tokens,
+                    api_key,
+                    project_id,
+                    organization_id,
+                    account_id,
+                } = auth::login_with_chatgpt().await?;
+
+                // Store OAuth tokens
+                self.config.openai_oauth_tokens = Some(oauth_tokens);
+                self.config.openai_project_id = project_id;
+                self.config.openai_organization_id = organization_id;
+                self.config.openai_chatgpt_account_id = account_id;
+
+                // Store API key if we got one
+                if let Some(api_key) = api_key {
+                    self.config.openai_api_key = Some(api_key);
+                }
+
+                self.config.save()?;
+                auth::prepare_openai_environment(&mut self.config).await?;
+                println!("OAuth credentials stored. Refreshing provider...");
+                if let Err(err) = self.refresh_provider() {
+                    eprintln!("Warning: Could not refresh provider: {err}");
+                }
+            }
+            _ => {
+                println!("Login cancelled.");
+            }
+        }
+
+        Ok(())
+    }
+
     fn record_message(&mut self, role: MessageRole, content: String) {
-        self.session.add_message(role, content);
+        self.record_message_with_metadata(role, content, None);
+    }
+
+    fn record_message_with_metadata(
+        &mut self,
+        role: MessageRole,
+        content: String,
+        metadata: Option<MessageMetadata>,
+    ) {
+        self.session
+            .add_message_with_metadata(role, content, metadata);
         self.persist_session_if_needed();
+    }
+
+    fn has_executed_bash_command(&self, command: &str) -> bool {
+        let needle = format!("Command: {}", command);
+        let count = self
+            .session
+            .conversation_history
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message.role,
+                    MessageRole::Tool { ref server, ref tool }
+                        if server == "system" && tool == "bash"
+                ) && message.content == needle
+            })
+            .count();
+        count >= 10
     }
 
     fn draw_prompt_frame(&self) {
@@ -282,10 +488,12 @@ impl Repl {
 
         out.queue(cursor::Hide).ok();
         out.queue(cursor::MoveToColumn(0)).ok();
+        out.queue(SetForegroundColor(Color::DarkGrey)).ok();
         out.queue(Print(&border)).ok();
         out.queue(Print("\r\n")).ok();
         out.queue(Print("\r\n")).ok();
         out.queue(Print(&border)).ok();
+        out.queue(ResetColor).ok();
         out.queue(Print("\r\n")).ok();
 
         if let Some(msg) = &self.status_message {
@@ -367,6 +575,7 @@ impl Repl {
             last_interrupt: None,
             current_mode: "Auto".to_string(),
             status_message: None,
+            tool_registry: ToolRegistry::new(),
         }
     }
 
@@ -561,6 +770,7 @@ impl Repl {
             "/mcp" => self.show_mcp_status().await,
             "/resume" => self.resume_session(args).await,
             "/clear" => self.clear_history(),
+            "/login" => self.login_wizard().await,
             "/logout" => self.logout(),
             _ => {
                 println!("Unknown command: {}", cmd);
@@ -596,8 +806,15 @@ impl Repl {
             .as_ref()
             .map(|tools| build_tool_prompt_section(tools));
 
-        let mut tool_calls = 0usize;
-        let max_tool_calls = 5usize;
+        let builtin_specs = self.tool_registry.specs();
+        let ToolRegistryConfig {
+            specs: tool_specs,
+            map: tool_name_map,
+        } = build_tool_registry(&builtin_specs, tools_snapshot.as_ref());
+
+        self.session.normalize_tool_history();
+
+        let mut _tool_calls = 0usize;
         #[allow(unused_assignments)]
         let mut final_response: Option<String> = None;
 
@@ -614,20 +831,11 @@ impl Repl {
             prompt.push_str(&self.session.build_prompt_with_context(true));
             prompt.push_str("Respond as the assistant to the latest user message.");
 
-            let bash_tool = json!({
-                "name": "bash",
-                "description": "Execute bash commands to search files, read file contents, or perform other system operations. Use this to understand the codebase context better.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The bash command to execute (e.g., 'find . -name \"*.rs\"', 'grep -r \"function_name\" src/', 'cat src/main.rs')"
-                        }
-                    },
-                    "required": ["command"]
-                }
-            });
+            let structured_messages = if self.provider_kind == Provider::OpenAi {
+                Some(self.session.build_openai_messages())
+            } else {
+                None
+            };
 
             let request = CompletionRequest {
                 model: self.model.clone(),
@@ -635,8 +843,9 @@ impl Repl {
                 user_prompt: prompt.clone(),
                 max_output_tokens: self.max_tokens,
                 temperature: self.temperature,
-                messages: None,
-                tools: Some(vec![bash_tool.clone()]),
+                messages: structured_messages,
+                tools: Some(tool_specs.clone()),
+                reasoning_effort: self.current_reasoning_effort(),
             };
 
             let spinner = Spinner::start("Thinking...".to_string());
@@ -644,7 +853,8 @@ impl Repl {
             spinner.stop().await;
             let mut response = response_result?;
 
-            if !response.tool_calls.is_empty() {
+            while !response.tool_calls.is_empty() {
+
                 let is_anthropic = self.provider.name() == "anthropic";
 
                 let mut messages = if is_anthropic {
@@ -712,26 +922,320 @@ impl Repl {
                     }));
                 }
 
-                for tool_call in &response.tool_calls {
-                    if tool_call.name == "bash" {
-                        if let Some(command) = tool_call.input.get("command").and_then(|v| v.as_str()) {
-                            println!();
-                            stdout().execute(SetForegroundColor(Color::Cyan))?;
-                            println!("  $ {}", command);
-                            stdout().execute(ResetColor)?;
+                let mut executed_any = false;
 
-                            let result = execute_bash_command(command)?;
-                            let truncated = if result.len() > 4000 {
-                                format!("{}... (truncated, {} total chars)", &result[..4000], result.len())
-                            } else {
-                                result
-                            };
+                for tool_call in &response.tool_calls {
+
+                    match tool_name_map.get(&tool_call.name) {
+                        Some(tool_entry) => match tool_entry {
+                            RegisteredTool::Bash => {
+                                executed_any = true;
+                                _tool_calls += 1;
+
+                                let command = match extract_bash_command(&tool_call.input) {
+                                    Ok(cmd) => cmd,
+                                    Err(err_msg) => {
+                                        append_tool_response_message(
+                                            &mut messages,
+                                            is_anthropic,
+                                            &tool_call.id,
+                                            &err_msg,
+                                        );
+                                        let metadata =
+                                            Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+                                        self.record_message_with_metadata(
+                                            MessageRole::Tool {
+                                                server: "system".to_string(),
+                                                tool: "bash".to_string()
+                                            },
+                                            err_msg,
+                                            metadata,
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                println!();
+                                stdout().execute(SetForegroundColor(Color::Cyan))?;
+                                println!("  $ {}", command);
+                                stdout().execute(ResetColor)?;
+
+                                let command_repeated =
+                                    self.has_executed_bash_command(command.as_str());
+
+                                let command_metadata = Some(MessageMetadata::for_tool_command(
+                                    tool_call.id.clone(),
+                                    Some(tool_call.input.clone()),
+                                ));
+
+                                self.record_message_with_metadata(
+                                    MessageRole::Tool {
+                                        server: "system".to_string(),
+                                        tool: "bash".to_string()
+                                    },
+                                    format!("Command: {}", command),
+                                    command_metadata,
+                                );
+
+                                let command_output = if command_repeated {
+                                    format!(
+                                        "WARNING: Command '{}' has already been executed 10 times in this session.",
+                                        command
+                                    )
+                                } else {
+                                    execute_bash_command(&command, &self.session.working_directory)?.output
+                                };
+
+                                let output_metadata =
+                                    Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+
+                                self.record_message_with_metadata(
+                                    MessageRole::Tool {
+                                        server: "system".to_string(),
+                                        tool: "bash".to_string()
+                                    },
+                                    format!("Output:\n{}", command_output),
+                                    output_metadata,
+                                );
+
+                                let (preview, total_chars, was_truncated) =
+                                    take_first_chars_with_total(&command_output, 4000);
+                                let truncated = if was_truncated {
+                                    format!(
+                                        "{}... (truncated, {} total chars)",
+                                        preview, total_chars
+                                    )
+                                } else {
+                                    command_output.clone()
+                                };
+
+                                let mut out = stdout();
+                                let color = if command_repeated {
+                                    Color::Yellow
+                                } else {
+                                    Color::DarkGrey
+                                };
+                                out.execute(SetForegroundColor(color)).ok();
+                                write!(out, "{}", truncated).ok();
+                                if !truncated.ends_with('\n') {
+                                    writeln!(out).ok();
+                                }
+                                out.execute(ResetColor).ok();
+                                out.flush().ok();
+
+                                append_tool_response_message(
+                                    &mut messages,
+                                    is_anthropic,
+                                    &tool_call.id,
+                                    &truncated,
+                                );
+                            }
+                            RegisteredTool::Builtin(tool_name) => {
+                                executed_any = true;
+                                _tool_calls += 1;
+                                self.handle_builtin_tool(tool_name, tool_call, &mut messages, is_anthropic);
+                            }
+                            RegisteredTool::Mcp { server, tool } => {
+                                executed_any = true;
+                                _tool_calls += 1;
+
+                                let server_name = server.clone();
+                                let tool_name = tool.clone();
+
+                                println!();
+                                stdout().execute(SetForegroundColor(Color::Cyan))?;
+                                println!("  ⚙ MCP {}.{}", server_name, tool_name);
+                                stdout().execute(ResetColor)?;
+
+                                let args_display = if tool_call.input.is_null() {
+                                    "Arguments: null".to_string()
+                                } else {
+                                    match serde_json::to_string_pretty(&tool_call.input) {
+                                        Ok(pretty) => format!("Arguments:\n{}", pretty),
+                                        Err(_) => format!("Arguments: {}", tool_call.input),
+                                    }
+                                };
+
+                                let command_metadata = Some(MessageMetadata::for_tool_command(
+                                    tool_call.id.clone(),
+                                    Some(tool_call.input.clone()),
+                                ));
+
+                                self.record_message_with_metadata(
+                                    MessageRole::Tool {
+                                        server: server_name.clone(),
+                                        tool: tool_name.clone(),
+                                    },
+                                    args_display,
+                                    command_metadata,
+                                );
+
+                                let arguments = match extract_tool_arguments(&tool_call.input) {
+                                    Ok(args) => args,
+                                    Err(message) => {
+                                        if is_anthropic {
+                                            let tool_result_content = vec![json!({
+                                                "type": "tool_result",
+                                                "tool_use_id": tool_call.id,
+                                                "content": message
+                                            })];
+                                            messages.push(json!({
+                                                "role": "user",
+                                                "content": tool_result_content
+                                            }));
+                                        } else {
+                                            messages.push(json!({
+                                                "role": "tool",
+                                                "tool_call_id": tool_call.id,
+                                                "content": message.clone()
+                                            }));
+                                        }
+                                        let error_metadata =
+                                            Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+                                        self.record_message_with_metadata(
+                                            MessageRole::Tool {
+                                                server: server_name.clone(),
+                                                tool: tool_name.clone(),
+                                            },
+                                            message,
+                                            error_metadata,
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                let manager = match &self.mcp_manager {
+                                    Some(mgr) => mgr.clone(),
+                                    None => {
+                                        let warning = "ERROR: MCP tools are not available in this session.".to_string();
+                                        if is_anthropic {
+                                            let tool_result_content = vec![json!({
+                                                "type": "tool_result",
+                                                "tool_use_id": tool_call.id,
+                                                "content": warning.clone()
+                                            })];
+                                            messages.push(json!({
+                                                "role": "user",
+                                                "content": tool_result_content
+                                            }));
+                                        } else {
+                                            messages.push(json!({
+                                                "role": "tool",
+                                                "tool_call_id": tool_call.id,
+                                                "content": warning.clone()
+                                            }));
+                                        }
+                                        let warning_metadata =
+                                            Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+                                        self.record_message_with_metadata(
+                                            MessageRole::Tool {
+                                                server: server_name.clone(),
+                                                tool: tool_name.clone(),
+                                            },
+                                            warning,
+                                            warning_metadata,
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                let spinner = Spinner::start(format!(
+                                    "Running MCP {}.{}...",
+                                    server_name, tool_name
+                                ));
+                                let tool_result = manager
+                                    .call_tool(&server_name, tool_name.clone(), arguments.clone())
+                                    .await;
+                                spinner.stop().await;
+
+                                let (mut tool_output, is_error) = match tool_result {
+                                    Ok(result) => {
+                                        let is_error = result.is_error.unwrap_or(false);
+                                        let mut text = format_tool_result(&result);
+                                        if text.trim().is_empty() {
+                                            if is_error {
+                                                text = "ERROR: MCP tool returned no content.".to_string();
+                                            } else {
+                                                text = "MCP tool returned no content.".to_string();
+                                            }
+                                        }
+                                        (text, is_error)
+                                    }
+                                    Err(err) => (format!("ERROR: {}", err), true),
+                                };
+
+                                if is_error && !tool_output.starts_with("ERROR") {
+                                    tool_output = format!("ERROR: {}", tool_output);
+                                }
+
+                                let stored_output = if tool_output.chars().count() > 8000 {
+                                    let mut truncated = truncate_for_display(&tool_output, 8000);
+                                    truncated.push_str("\n... (truncated for conversation history)");
+                                    truncated
+                                } else {
+                                    tool_output.clone()
+                                };
+
+                                let output_metadata =
+                                    Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+                                self.record_message_with_metadata(
+                                    MessageRole::Tool {
+                                        server: server_name.clone(),
+                                        tool: tool_name.clone(),
+                                    },
+                                    stored_output,
+                                    output_metadata,
+                                );
+
+                                log_tool_execution(&server_name, &tool_name, &tool_output, is_error)?;
+
+                                let (preview, total_chars, was_truncated) =
+                                    take_first_chars_with_total(&tool_output, 4000);
+                                let truncated = if was_truncated {
+                                    format!(
+                                        "{}... (truncated, {} total chars)",
+                                        preview, total_chars
+                                    )
+                                } else {
+                                    tool_output.clone()
+                                };
+
+                                if is_anthropic {
+                                    let tool_result_content = vec![json!({
+                                        "type": "tool_result",
+                                        "tool_use_id": tool_call.id,
+                                        "content": truncated
+                                    })];
+                                    messages.push(json!({
+                                        "role": "user",
+                                        "content": tool_result_content
+                                    }));
+                                } else {
+                                    messages.push(json!({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call.id,
+                                        "content": truncated
+                                    }));
+                                }
+                            }
+                        },
+                        None => {
+                            executed_any = true;
+                            _tool_calls += 1;
+
+                            let warning = format!(
+                                "ERROR: Tool '{}' is not registered in this session.",
+                                tool_call.name
+                            );
+                            stdout().execute(SetForegroundColor(Color::Yellow)).ok();
+                            println!("{}", warning);
+                            stdout().execute(ResetColor).ok();
 
                             if is_anthropic {
                                 let tool_result_content = vec![json!({
                                     "type": "tool_result",
                                     "tool_use_id": tool_call.id,
-                                    "content": truncated
+                                    "content": warning.clone()
                                 })];
                                 messages.push(json!({
                                     "role": "user",
@@ -741,11 +1245,26 @@ impl Repl {
                                 messages.push(json!({
                                     "role": "tool",
                                     "tool_call_id": tool_call.id,
-                                    "content": truncated
+                                    "content": warning.clone()
                                 }));
                             }
+
+                            let missing_tool_metadata =
+                                Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+                            self.record_message_with_metadata(
+                                MessageRole::Tool {
+                                    server: "system".to_string(),
+                                    tool: tool_call.name.clone(),
+                                },
+                                warning,
+                                missing_tool_metadata,
+                            );
                         }
                     }
+                }
+
+                if !executed_any {
+                    break;
                 }
 
                 let follow_up_request = CompletionRequest {
@@ -755,7 +1274,8 @@ impl Repl {
                     max_output_tokens: self.max_tokens,
                     temperature: self.temperature,
                     messages: Some(messages),
-                    tools: Some(vec![bash_tool]),
+                    tools: Some(tool_specs.clone()),
+                    reasoning_effort: self.current_reasoning_effort(),
                 };
 
                 let spinner = Spinner::start("Thinking...".to_string());
@@ -808,22 +1328,6 @@ impl Repl {
                         continue;
                     }
 
-                    if tool_calls >= max_tool_calls {
-                        stdout().execute(SetForegroundColor(Color::Yellow)).ok();
-                        println!("Skipping MCP tool call (limit of {} reached).", max_tool_calls);
-                        stdout().execute(ResetColor).ok();
-
-                        self.record_message(
-                            MessageRole::Tool {
-                                server: parsed.call.server.clone(),
-                                tool: parsed.call.tool.clone(),
-                            },
-                            "ERROR: MCP tool call limit reached for this request.".to_string(),
-                        );
-
-                        continue;
-                    }
-
                     let manager = self.mcp_manager.as_ref().unwrap();
 
                     let spinner = Spinner::start(format!(
@@ -855,7 +1359,7 @@ impl Repl {
                         Err(err) => (format!("ERROR: {}", err), true),
                     };
 
-                    tool_calls += 1;
+                    _tool_calls += 1;
 
                     if is_error && !tool_output.starts_with("ERROR") {
                         tool_output = format!("ERROR: {}", tool_output);
@@ -884,11 +1388,23 @@ impl Repl {
                         is_error,
                     )?;
 
+                    if let Some(suffix_text) = parsed.suffix.as_deref() {
+                        let display = strip_file_blocks(suffix_text);
+                        if !display.trim().is_empty() {
+                            print_assistant_message(&display, &self.model)?;
+                        }
+                        self.record_message(
+                            MessageRole::Assistant,
+                            suffix_text.to_string(),
+                        );
+                    }
+
                     continue;
                 }
                 Ok(None) => {
-                    final_response = Some(raw_text.clone());
-                    self.record_message(MessageRole::Assistant, raw_text.clone());
+                    let response_text = raw_text.clone();
+                    final_response = Some(response_text.clone());
+                    self.record_message(MessageRole::Assistant, response_text);
                     break;
                 }
                 Err(parse_error) => {
@@ -915,6 +1431,97 @@ impl Repl {
         }
 
         Ok(())
+    }
+
+    fn handle_builtin_tool(
+        &mut self,
+        tool_name: &str,
+        tool_call: &ToolCall,
+        messages: &mut Vec<Value>,
+        is_anthropic: bool,
+    ) {
+        let args_display = if tool_call.input.is_null() {
+            "Arguments: null".to_string()
+        } else {
+            match serde_json::to_string_pretty(&tool_call.input) {
+                Ok(pretty) => format!("Arguments:\n{}", pretty),
+                Err(_) => format!("Arguments: {}", tool_call.input),
+            }
+        };
+
+        if let Some(lines) = summarize_builtin_tool_action(tool_name, &tool_call.input) {
+            for line in lines {
+                println!("{}", line);
+            }
+        }
+
+        let metadata = Some(MessageMetadata::for_tool_command(
+            tool_call.id.clone(),
+            Some(tool_call.input.clone()),
+        ));
+        self.record_message_with_metadata(
+            MessageRole::Tool {
+                server: "builtin".to_string(),
+                tool: tool_name.to_string(),
+            },
+            args_display,
+            metadata,
+        );
+
+        let ctx = ToolExecutionContext {
+            working_directory: &self.session.working_directory,
+        };
+
+        let execution = self
+            .tool_registry
+            .execute(tool_name, ctx, &tool_call.input);
+
+        let (content, success) = match execution {
+            Ok(output) => (output.content, output.success),
+            Err(err) => (format!("ERROR: {}", err), false),
+        };
+
+        let output_metadata = Some(MessageMetadata::for_tool_output(tool_call.id.clone()));
+        self.record_message_with_metadata(
+            MessageRole::Tool {
+                server: "builtin".to_string(),
+                tool: tool_name.to_string(),
+            },
+            content.clone(),
+            output_metadata,
+        );
+
+        let (preview, total_chars, was_truncated) = take_first_chars_with_total(&content, 4000);
+        let truncated = if was_truncated {
+            format!("{}... (truncated, {} total chars)", preview, total_chars)
+        } else {
+            preview
+        };
+
+        let mut out = stdout();
+        if tool_name == "read_file" {
+            out.execute(SetForegroundColor(Color::DarkGrey)).ok();
+            println!(
+                "    (content captured; {} characters)",
+                content.chars().count()
+            );
+            out.execute(ResetColor).ok();
+        } else if !truncated.trim().is_empty() {
+            let color = if success {
+                Color::DarkGrey
+            } else {
+                Color::Yellow
+            };
+            out.execute(SetForegroundColor(color)).ok();
+            write!(out, "{}", truncated).ok();
+            if !truncated.ends_with('\n') {
+                writeln!(out).ok();
+            }
+            out.execute(ResetColor).ok();
+        }
+        out.flush().ok();
+
+        append_tool_response_message(messages, is_anthropic, &tool_call.id, &content);
     }
 
     async fn process_file_blocks(&mut self, blocks: HashMap<PathBuf, String>) -> Result<()> {
@@ -972,7 +1579,7 @@ impl Repl {
         println!("  /files          - List loaded files");
         println!("  /model <name>   - Switch to a different AI model");
         println!("                    Examples: claude-sonnet-4-5-20250929, claude-haiku-4-5,");
-        println!("                              gpt-5-codex, glm-4.6");
+        println!("                              gpt-5-codex-high, gpt-5-mini, glm-4.6");
         println!("  /mcp            - Show MCP servers and available tools");
         println!("  /resume         - Resume a previous chat session");
         println!("  /clear          - Clear conversation history");
@@ -981,6 +1588,12 @@ impl Repl {
         println!();
         println!("Current model: {}", self.model);
         println!("Current provider: {}", self.provider.name());
+        if self.provider_kind == Provider::OpenAi {
+            println!(
+                "OpenAI reasoning effort: {}",
+                Self::reasoning_effort_label(self.current_reasoning_effort())
+            );
+        }
         Ok(())
     }
 
@@ -1289,13 +1902,23 @@ impl Repl {
             println!("    claude-opus-4-1                  - Most powerful");
             println!("    claude-sonnet-4                  - General purpose");
             println!();
-            println!("  OpenAI:");
-            println!("    gpt-5-codex                      - Optimized for coding");
+            println!("  OpenAI (ChatGPT OAuth-ready):");
+            for (model, blurb) in OPENAI_OAUTH_MODELS {
+                println!("    {:<32} - {}", model, blurb);
+            }
             println!();
             println!("  GLM (Z.AI - International):");
             println!("    glm-4.6                          - Best for coding (200K context)");
             println!("    glm-4.5                          - Previous generation");
             println!();
+            if self.provider_kind == Provider::OpenAi {
+                println!(
+                    "OpenAI reasoning effort: {}",
+                    Self::reasoning_effort_label(self.current_reasoning_effort())
+                );
+                println!("You will be prompted to adjust this when selecting an OpenAI model.");
+                println!();
+            }
             println!("Current model: {}", self.model);
             return Ok(());
         }
@@ -1334,6 +1957,9 @@ impl Repl {
 
         println!("Switched to model: {}", new_model);
         println!("Provider: {}", self.provider.name());
+        if self.provider_kind == Provider::OpenAi {
+            self.prompt_openai_reasoning_effort()?;
+        }
 
         Ok(())
     }
@@ -1416,6 +2042,7 @@ impl Repl {
             }
         }
     }
+
 }
 
 fn format_session_line(summary: &ConversationSummary) -> String {
@@ -1581,12 +2208,348 @@ struct ParsedToolCall {
     prefix: Option<String>,
     command_text: String,
     call: McpToolCall,
+    suffix: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum RegisteredTool {
+    Bash,
+    Builtin(String),
+    Mcp { server: String, tool: String },
+}
+
+struct ToolRegistryConfig {
+    specs: Vec<Value>,
+    map: HashMap<String, RegisteredTool>,
+}
+
+fn build_tool_registry(
+    builtin_specs: &[Value],
+    tools_by_server: Option<&HashMap<String, Vec<McpTool>>>,
+) -> ToolRegistryConfig {
+    let mut specs = Vec::new();
+    let mut map = HashMap::new();
+
+    specs.push(build_bash_tool());
+    map.insert("bash".to_string(), RegisteredTool::Bash);
+
+    for spec in builtin_specs {
+        if let Some(name) = spec.get("name").and_then(|v| v.as_str()) {
+            map.insert(name.to_string(), RegisteredTool::Builtin(name.to_string()));
+            specs.push(spec.clone());
+        }
+    }
+
+    if let Some(snapshot) = tools_by_server {
+        let mut servers: Vec<_> = snapshot.iter().collect();
+        servers.sort_by(|a, b| a.0.cmp(b.0));
+
+        for (server, tools) in servers {
+            let mut sorted: Vec<&McpTool> = tools.iter().collect();
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+            for tool in sorted {
+                if let Some((qualified_name, spec)) = build_mcp_tool_definition(server, tool) {
+                    if map.contains_key(&qualified_name) {
+                        continue;
+                    }
+
+                    map.insert(
+                        qualified_name.clone(),
+                        RegisteredTool::Mcp {
+                            server: (*server).clone(),
+                            tool: tool.name.clone(),
+                        },
+                    );
+                    specs.push(spec);
+                }
+            }
+        }
+    }
+
+    ToolRegistryConfig { specs, map }
+}
+
+fn build_bash_tool() -> Value {
+    json!({
+        "name": "bash",
+        "description": "Execute bash commands to search files, read file contents, or perform other system operations. Use this to understand the codebase context better.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute (e.g., 'find . -name \"*.rs\"', 'grep -r \"function_name\" src/', 'cat src/main.rs')"
+                }
+            },
+            "required": ["command"]
+        }
+    })
+}
+
+
+fn build_mcp_tool_definition(server: &str, tool: &McpTool) -> Option<(String, Value)> {
+    let qualified_name = qualify_mcp_tool_name(server, &tool.name);
+    let schema = sanitize_mcp_input_schema(&tool.input_schema);
+    let description = tool
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("MCP tool {}.{}", server, tool.name));
+
+    let spec = json!({
+        "name": qualified_name.clone(),
+        "description": description,
+        "input_schema": schema,
+    });
+
+    Some((qualified_name, spec))
+}
+
+fn sanitize_mcp_input_schema(schema: &Value) -> Value {
+    if let Value::Object(map) = schema {
+        let mut sanitized = serde_json::Map::new();
+        sanitized.insert("type".into(), Value::String("object".into()));
+
+        if let Some(description) = map.get("description").cloned() {
+            sanitized.insert("description".into(), description);
+        }
+
+        let properties = map
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut sanitized_props = serde_json::Map::new();
+        for (key, value) in properties {
+            sanitized_props.insert(key, sanitize_schema_node(value));
+        }
+        sanitized.insert("properties".into(), Value::Object(sanitized_props));
+
+        let required = map
+            .get("required")
+            .filter(|v| v.is_array())
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        sanitized.insert("required".into(), required);
+
+        sanitized.insert(
+            "additionalProperties".into(),
+            map.get("additionalProperties")
+                .cloned()
+                .unwrap_or(Value::Bool(true)),
+        );
+
+        Value::Object(sanitized)
+    } else {
+        default_parameters_schema()
+    }
+}
+
+fn sanitize_schema_node(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            let mut inferred = infer_schema_type(&map);
+            if inferred.eq_ignore_ascii_case("integer") {
+                inferred = "number".to_string();
+            }
+            map.insert("type".into(), Value::String(inferred.clone()));
+
+            if inferred == "object" {
+                let nested = map
+                    .remove("properties")
+                    .and_then(|v| v.as_object().cloned())
+                    .unwrap_or_default();
+                let mut nested_props = serde_json::Map::new();
+                for (key, value) in nested {
+                    nested_props.insert(key, sanitize_schema_node(value));
+                }
+                map.insert("properties".into(), Value::Object(nested_props));
+                if !map.contains_key("additionalProperties") {
+                    map.insert("additionalProperties".into(), Value::Bool(true));
+                }
+            } else if inferred == "array" {
+                let items = map
+                    .remove("items")
+                    .map(sanitize_schema_node)
+                    .unwrap_or_else(|| json!({ "type": "string" }));
+                map.insert("items".into(), items);
+            }
+
+            Value::Object(map)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_schema_node).collect()),
+        Value::Bool(_) => json!({ "type": "boolean" }),
+        Value::Number(_) => json!({ "type": "number" }),
+        Value::String(_) => json!({ "type": "string" }),
+        Value::Null => json!({ "type": "string" }),
+    }
+}
+
+fn infer_schema_type(map: &serde_json::Map<String, Value>) -> String {
+    if let Some(explicit) = map.get("type").and_then(|v| v.as_str()) {
+        return explicit.to_string();
+    }
+
+    if map.contains_key("properties") {
+        "object".to_string()
+    } else if map.contains_key("items") {
+        "array".to_string()
+    } else if map.contains_key("enum") || map.contains_key("const") || map.contains_key("format") {
+        "string".to_string()
+    } else if map.contains_key("minimum") || map.contains_key("maximum") {
+        "number".to_string()
+    } else if map.contains_key("anyOf") || map.contains_key("oneOf") {
+        "object".to_string()
+    } else {
+        "string".to_string()
+    }
+}
+
+fn default_parameters_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": true
+    })
+}
+
+fn sanitize_tool_component(input: &str) -> String {
+    let mut cleaned = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            cleaned.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '-' | '_') {
+            cleaned.push(ch);
+        } else {
+            cleaned.push('_');
+        }
+    }
+
+    if cleaned.is_empty() {
+        "tool".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn qualify_mcp_tool_name(server: &str, tool_name: &str) -> String {
+    const MAX_TOOL_NAME: usize = 64;
+    let server_component = sanitize_tool_component(server);
+    let tool_component = sanitize_tool_component(tool_name);
+    let mut qualified = format!("mcp__{}__{}", server_component, tool_component);
+
+    if qualified.len() > MAX_TOOL_NAME {
+        let mut hasher = Sha256::new();
+        hasher.update(qualified.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+        let suffix_len = 8.min(hash.len());
+        let prefix_len = MAX_TOOL_NAME.saturating_sub(suffix_len);
+        let prefix = qualified.chars().take(prefix_len).collect::<String>();
+        qualified = format!("{}{}", prefix, &hash[..suffix_len]);
+    }
+
+    qualified
+}
+
+fn extract_tool_arguments(value: &Value) -> Result<Option<HashMap<String, Value>>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Object(map) => Ok(Some(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())),
+        _ => Err("ERROR: Tool arguments must be provided as a JSON object or null.".to_string()),
+    }
+}
+
+fn extract_bash_command(input: &Value) -> Result<String, String> {
+    let command_value = input.get("command").ok_or_else(|| {
+        "ERROR: Missing required field 'command' for bash tool input.".to_string()
+    })?;
+    let command_str = command_value.as_str().ok_or_else(|| {
+        "ERROR: Field 'command' must be a string for bash tool input.".to_string()
+    })?;
+    let trimmed = command_str.trim();
+    if trimmed.is_empty() {
+        return Err("ERROR: Field 'command' cannot be empty for bash tool input.".to_string());
+    }
+    Ok(command_str.to_string())
+}
+
+fn append_tool_response_message(
+    messages: &mut Vec<Value>,
+    is_anthropic: bool,
+    tool_call_id: &str,
+    content: &str,
+) {
+    if is_anthropic {
+        let tool_result_content = vec![json!({
+            "type": "tool_result",
+            "tool_use_id": tool_call_id,
+            "content": content
+        })];
+        messages.push(json!({
+            "role": "user",
+            "content": tool_result_content
+        }));
+    } else {
+        messages.push(json!({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content
+        }));
+    }
+}
+
+fn summarize_builtin_tool_action(tool_name: &str, input: &Value) -> Option<Vec<String>> {
+    match tool_name {
+        "read_file" => {
+            let path = input.get("path").and_then(|v| v.as_str())?;
+            let range = match (
+                input.get("start_line").and_then(|v| v.as_i64()),
+                input.get("end_line").and_then(|v| v.as_i64()),
+            ) {
+                (Some(start), Some(end)) => format!(" (lines {}-{})", start, end),
+                (Some(start), None) => format!(" (from line {})", start),
+                (None, Some(end)) => format!(" (through line {})", end),
+                _ => String::new(),
+            };
+            Some(vec![
+                "• Explored".to_string(),
+                format!("  └ Read {}{}", path, range),
+            ])
+        }
+        "list_dir" => {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let depth = input
+                .get("depth")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1);
+            Some(vec![
+                "• Explored".to_string(),
+                format!("  └ List directory {} (depth {})", path, depth),
+            ])
+        }
+        "grep_files" => {
+            let path = input.get("path").and_then(|v| v.as_str())?;
+            let pattern = input.get("pattern").and_then(|v| v.as_str())?;
+            Some(vec![
+                "• Explored".to_string(),
+                format!("  └ Search '{}' in {}", pattern, path),
+            ])
+        }
+        "apply_patch" => Some(vec!["• Explored".to_string(), "  └ Apply patch".to_string()]),
+        _ => None,
+    }
 }
 
 fn build_tool_prompt_section(tools_by_server: &HashMap<String, Vec<McpTool>>) -> String {
     let mut section = String::from(
         "Available MCP tools:\n\
-Use CALL_MCP_TOOL server=<server_name> tool=<tool_name> args=<json_object> to request a tool.\n\
+Invoke these by calling the function tool using the `call name` shown below (e.g., mcp__server__tool).\n\
+If tool calling is unavailable, you may fall back to CALL_MCP_TOOL server=<server_name> tool=<tool_name> args=<json_object>.\n\
 Only request a tool when it will help solve the task.\n",
     );
 
@@ -1600,11 +2563,15 @@ Only request a tool when it will help solve the task.\n",
             ordered.sort_by(|a, b| a.name.cmp(&b.name));
 
             for tool in ordered.iter().take(8) {
+                let call_name = qualify_mcp_tool_name(server, &tool.name);
                 let description = tool
                     .description
                     .as_deref()
                     .unwrap_or("No description provided");
-                section.push_str(&format!("  - {}: {}\n", tool.name, description));
+                section.push_str(&format!(
+                    "  - {} (call name: `{}`): {}\n",
+                    tool.name, call_name, description
+                ));
 
                 if let Ok(schema_str) = serde_json::to_string(&tool.input_schema) {
                     let snippet = truncate_inline(&schema_str, 200);
@@ -1635,17 +2602,18 @@ fn parse_mcp_tool_call(text: &str) -> Result<Option<ParsedToolCall>> {
 
     let command_and_rest = text[command_index..].trim();
 
-    // Ensure the tool call is the only content after the prefix (allow trailing whitespace)
     let (command_line, trailing_text) = if let Some(pos) = command_and_rest.find('\n') {
         let (line, rest) = command_and_rest.split_at(pos);
-        (line.trim_end(), rest[pos + 1..].trim())
+        (line.trim_end(), rest.trim())
     } else {
         (command_and_rest, "")
     };
 
-    if !trailing_text.is_empty() {
-        anyhow::bail!("Additional text found after MCP tool call. Tool calls must be on a single line.");
-    }
+    let suffix = if trailing_text.is_empty() {
+        None
+    } else {
+        Some(trailing_text.to_string())
+    };
 
     let command_line = command_line.trim();
     if !command_line.starts_with("CALL_MCP_TOOL") {
@@ -1710,6 +2678,7 @@ fn parse_mcp_tool_call(text: &str) -> Result<Option<ParsedToolCall>> {
             tool,
             arguments,
         },
+        suffix,
     }))
 }
 
@@ -1816,6 +2785,74 @@ fn strip_file_blocks(text: &str) -> String {
     }
 
     output.trim_end_matches('\n').to_string()
+}
+
+fn take_first_chars_with_total(text: &str, max_chars: usize) -> (String, usize, bool) {
+    let mut snippet = String::new();
+    let mut total = 0usize;
+    let mut truncated = false;
+
+    for ch in text.chars() {
+        if total < max_chars {
+            snippet.push(ch);
+        } else {
+            truncated = true;
+        }
+        total += 1;
+    }
+
+    (snippet, total, truncated)
+}
+
+struct ToolExecutionLogger {
+    tool_name: &'static str,
+}
+
+impl ToolExecutionLogger {
+    fn start(tool_name: &'static str, command: &str) -> Self {
+        let mut out = stdout();
+        out.execute(SetForegroundColor(Color::Blue)).ok();
+        println!("⏳ Running {tool_name} command…");
+        out.execute(ResetColor).ok();
+        out.execute(SetForegroundColor(Color::DarkGrey)).ok();
+        println!("    {}", command);
+        out.execute(ResetColor).ok();
+
+        Self { tool_name }
+    }
+
+    fn finish(&self, exit_code: i32, duration: StdDuration) {
+        let mut out = stdout();
+        out.execute(SetForegroundColor(Color::Green)).ok();
+        println!(
+            "✔ {tool} completed in {} (exit code {exit})",
+            format_duration(duration),
+            tool = self.tool_name,
+            exit = exit_code
+        );
+        out.execute(ResetColor).ok();
+    }
+
+    fn fail(&self, duration: StdDuration, message: &str) {
+        let mut out = stdout();
+        out.execute(SetForegroundColor(Color::Red)).ok();
+        println!(
+            "✖ {tool} failed after {}: {message}",
+            format_duration(duration),
+            tool = self.tool_name
+        );
+        out.execute(ResetColor).ok();
+    }
+}
+
+fn format_duration(duration: StdDuration) -> String {
+    let secs = duration.as_secs();
+    let millis = duration.subsec_millis();
+    if secs > 0 {
+        format!("{secs}.{millis:03}s")
+    } else {
+        format!("{millis}ms")
+    }
 }
 
 fn get_model_display_name(model: &str) -> String {
@@ -1930,16 +2967,56 @@ impl Spinner {
         let stop = Arc::new(AtomicBool::new(true));
         let stop_clone = stop.clone();
 
+        let display_text = if message.trim().is_empty() {
+            "Thinking...".to_string()
+        } else {
+            message
+        };
+
         let handle = tokio::spawn(async move {
             let symbols = ['|', '/', '-', '\\'];
-            let mut index = 0usize;
+            let chars: Vec<char> = display_text.chars().collect();
+            let message_len = chars.len();
+            let mut frame = 0usize;
 
             while stop_clone.load(Ordering::Relaxed) {
-                let symbol = symbols[index % symbols.len()];
+                let symbol = symbols[frame % symbols.len()];
+
+                let rendered = if message_len == 0 {
+                    String::new()
+                } else {
+                    let shine_center = frame % message_len;
+                    let prev_index = if message_len > 0 {
+                        (shine_center + message_len - 1) % message_len
+                    } else {
+                        0
+                    };
+                    let next_index = if message_len > 0 {
+                        (shine_center + 1) % message_len
+                    } else {
+                        0
+                    };
+
+                    let mut highlighted = String::new();
+                    for (i, ch) in chars.iter().enumerate() {
+                        let style = if i == shine_center {
+                            "\x1b[1;97m"
+                        } else if message_len > 1 && (i == prev_index || i == next_index) {
+                            "\x1b[37m"
+                        } else {
+                            "\x1b[90m"
+                        };
+                        highlighted.push_str(style);
+                        highlighted.push(*ch);
+                    }
+                    highlighted.push_str("\x1b[0m");
+                    highlighted
+                };
+
                 let mut out = stdout();
-                let _ = write!(out, "\r{} {}", symbol, message);
+                let _ = write!(out, "\r{} {}\x1b[K", symbol, rendered);
                 let _ = out.flush();
-                index = (index + 1) % symbols.len();
+                frame = frame.wrapping_add(1);
                 sleep(Duration::from_millis(120)).await;
             }
 
@@ -2054,24 +3131,56 @@ fn print_diff_line_with_bg(prefix: char, line_number: usize, text: &str, bg_colo
 }
 
 
-fn execute_bash_command(command: &str) -> Result<String> {
+struct BashCommandResult {
+    output: String,
+    #[allow(dead_code)]
+    exit_code: i32,
+    #[allow(dead_code)]
+    duration: StdDuration,
+}
+
+fn execute_bash_command(command: &str, working_dir: &Path) -> Result<BashCommandResult> {
     use std::process::Command;
 
-    let output = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(&["/C", command])
-            .output()
-            .context("Failed to execute bash command")?
-    } else {
-        Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output()
-            .context("Failed to execute bash command")?
+    let logger = ToolExecutionLogger::start("bash", command);
+    let start = Instant::now();
+
+    let output_result: Result<std::process::Output> = (|| {
+        if cfg!(target_os = "windows") {
+            if let Some(wsl_dir) = windows_to_wsl_path(working_dir) {
+                let cd_command = format!("cd '{}' && {}", escape_single_quotes(&wsl_dir), command);
+
+                match Command::new("wsl")
+                    .args(["bash", "-lc", &cd_command])
+                    .output()
+                {
+                    Ok(output) => Ok(output),
+                    Err(_) => run_windows_shell(command, working_dir),
+                }
+            } else {
+                run_windows_shell(command, working_dir)
+            }
+        } else {
+            Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(working_dir)
+                .output()
+                .context("Failed to execute bash command")
+        }
+    })();
+
+    let output = match output_result {
+        Ok(out) => out,
+        Err(err) => {
+            logger.fail(start.elapsed(), &format!("{err:#}"));
+            return Err(err);
+        }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_raw = String::from_utf8_lossy(&output.stderr);
+    let stderr = sanitize_bash_stderr(&stderr_raw);
 
     let mut result = String::new();
     if !stdout.is_empty() {
@@ -2089,9 +3198,130 @@ fn execute_bash_command(command: &str) -> Result<String> {
         result = "(command produced no output)".to_string();
     }
 
-    Ok(result)
+    let exit_code = output.status.code().unwrap_or_default();
+    let duration = start.elapsed();
+    logger.finish(exit_code, duration);
+
+    Ok(BashCommandResult {
+        output: result,
+        exit_code,
+        duration,
+    })
 }
 
+#[cfg(target_os = "windows")]
+fn run_windows_shell(command: &str, working_dir: &Path) -> Result<std::process::Output> {
+    use std::process::Command;
+
+    let bash_path = windows_path_to_bash_path(working_dir);
+    let cd_command = format!(
+        "cd '{}' && {}",
+        escape_single_quotes(&bash_path),
+        command
+    );
+
+    match Command::new("bash")
+        .args(["-c", &cd_command])
+        .output()
+    {
+        Ok(output) => Ok(output),
+        Err(_) => Command::new("cmd")
+            .args(&["/C", command])
+            .current_dir(working_dir)
+            .output()
+            .context("Failed to execute bash command"),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_windows_shell(command: &str, working_dir: &Path) -> Result<std::process::Output> {
+    let _ = (command, working_dir);
+    unreachable!("run_windows_shell should not be called on non-Windows platforms")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_path_to_bash_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy();
+
+    if let Some(rest) = path_str.strip_prefix(r"\\?\") {
+        return rest.replace('\\', "/");
+    }
+
+    if path_str.len() >= 2 && path_str.chars().nth(1) == Some(':') {
+        let drive = path_str.chars().next().unwrap().to_ascii_lowercase();
+        let rest = path_str.get(2..).unwrap_or("");
+        format!("/mnt/{}{}", drive, rest.replace('\\', "/"))
+    } else {
+        path_str.replace('\\', "/")
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_path_to_bash_path(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_to_wsl_path(path: &Path) -> Option<String> {
+    use std::process::Command;
+
+    let path_str = path.to_string_lossy().into_owned();
+
+    let output = Command::new("wsl")
+        .arg("wslpath")
+        .arg(&path_str)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let converted = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_string();
+
+    if converted.is_empty() {
+        None
+    } else {
+        Some(converted)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_to_wsl_path(_: &Path) -> Option<String> {
+    None
+}
+
+fn escape_single_quotes(input: &str) -> String {
+    input.replace('\'', "'\"'\"'")
+}
+
+fn sanitize_bash_stderr(stderr: &str) -> String {
+    if stderr.is_empty() {
+        return String::new();
+    }
+
+    let mut filtered_lines = Vec::new();
+    for line in stderr.lines() {
+        if line.trim()
+            == "your 131072x1 screen size is bogus. expect trouble"
+        {
+            continue;
+        }
+        filtered_lines.push(line);
+    }
+
+    if filtered_lines.is_empty() {
+        return String::new();
+    }
+
+    let mut result = filtered_lines.join("\n");
+    if stderr.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
 fn parse_file_blocks(input: &str) -> HashMap<PathBuf, String> {
     let mut map = HashMap::new();
     let mut lines = input.lines();

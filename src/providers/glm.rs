@@ -122,10 +122,14 @@ impl GlmClient {
 
         if let Some(calls) = first_choice.message.tool_calls {
             for call in calls {
+                let GlmToolCall { id, function, .. } = call;
+                let GlmFunction { name, arguments } = function;
+                let normalized_arguments = normalize_tool_arguments(arguments);
+
                 tool_calls.push(super::ToolCall {
-                    id: call.id,
-                    name: call.function.name,
-                    input: call.function.arguments,
+                    id,
+                    name,
+                    input: normalized_arguments,
                 });
             }
         }
@@ -256,4 +260,13 @@ struct GlmToolCall {
 struct GlmFunction {
     name: String,
     arguments: serde_json::Value,
+}
+
+fn normalize_tool_arguments(arguments: serde_json::Value) -> serde_json::Value {
+    match arguments {
+        serde_json::Value::String(s) => {
+            serde_json::from_str(&s).unwrap_or_else(|_| serde_json::Value::String(s))
+        }
+        other => other,
+    }
 }

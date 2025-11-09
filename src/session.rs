@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -10,6 +11,8 @@ use crate::intelligence::ProjectIntelligence;
 pub struct Message {
     pub role: MessageRole,
     pub content: String,
+    #[serde(default)]
+    pub metadata: Option<MessageMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -18,6 +21,41 @@ pub enum MessageRole {
     Assistant,
     System,
     Tool { server: String, tool: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ToolMessageKind {
+    Command,
+    Output,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MessageMetadata {
+    pub tool_call_id: Option<String>,
+    pub tool_message_kind: Option<ToolMessageKind>,
+    #[serde(default)]
+    pub tool_arguments: Option<Value>,
+}
+
+impl MessageMetadata {
+    pub fn for_tool_command(
+        call_id: impl Into<String>,
+        arguments: Option<Value>,
+    ) -> Self {
+        Self {
+            tool_call_id: Some(call_id.into()),
+            tool_message_kind: Some(ToolMessageKind::Command),
+            tool_arguments: arguments,
+        }
+    }
+
+    pub fn for_tool_output(call_id: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: Some(call_id.into()),
+            tool_message_kind: Some(ToolMessageKind::Output),
+            tool_arguments: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -57,8 +95,17 @@ impl Session {
         }
     }
 
-    pub fn add_message(&mut self, role: MessageRole, content: String) {
-        self.conversation_history.push(Message { role, content });
+    pub fn add_message_with_metadata(
+        &mut self,
+        role: MessageRole,
+        content: String,
+        metadata: Option<MessageMetadata>,
+    ) {
+        self.conversation_history.push(Message {
+            role,
+            content,
+            metadata,
+        });
     }
 
     #[allow(dead_code)]
@@ -104,6 +151,11 @@ impl Session {
     pub fn build_prompt_with_context(&self, include_files: bool) -> String {
         let mut prompt = String::new();
 
+        prompt.push_str(&format!(
+            "Working Directory: {}\n\n",
+            self.working_directory.display()
+        ));
+
         prompt.push_str("Conversation transcript (most recent last):\n\n");
 
         for message in &self.conversation_history {
@@ -145,6 +197,163 @@ impl Session {
         }
 
         prompt
+    }
+
+    pub fn normalize_tool_history(&mut self) {
+        #[derive(Clone)]
+        struct PendingToolState {
+            server: String,
+            tool: String,
+            insert_after: usize,
+            has_output: bool,
+        }
+
+        let mut pending: HashMap<String, PendingToolState> = HashMap::new();
+
+        for (idx, message) in self.conversation_history.iter().enumerate() {
+            let Some(metadata) = message.metadata.as_ref() else {
+                continue;
+            };
+            let Some(call_id) = metadata.tool_call_id.as_ref() else {
+                continue;
+            };
+            let Some(kind) = metadata.tool_message_kind.as_ref() else {
+                continue;
+            };
+
+            match kind {
+                ToolMessageKind::Command => {
+                    if let MessageRole::Tool { server, tool } = &message.role {
+                        pending.insert(
+                            call_id.clone(),
+                            PendingToolState {
+                                server: server.clone(),
+                                tool: tool.clone(),
+                                insert_after: idx + 1,
+                                has_output: false,
+                            },
+                        );
+                    }
+                }
+                ToolMessageKind::Output => {
+                    if let Some(state) = pending.get_mut(call_id) {
+                        state.has_output = true;
+                    }
+                }
+            }
+        }
+
+        let mut inserts: Vec<(usize, Message)> = Vec::new();
+
+        for (call_id, state) in pending.into_iter() {
+            if state.has_output {
+                continue;
+            }
+
+            let message = Message {
+                role: MessageRole::Tool {
+                    server: state.server,
+                    tool: state.tool,
+                },
+                content: "Output:\nERROR: Tool call ended without returning output.".to_string(),
+                metadata: Some(MessageMetadata::for_tool_output(call_id)),
+            };
+
+            inserts.push((state.insert_after, message));
+        }
+
+        if inserts.is_empty() {
+            return;
+        }
+
+        inserts.sort_by(|a, b| b.0.cmp(&a.0));
+
+        for (pos, message) in inserts {
+            let insert_pos = pos.min(self.conversation_history.len());
+            self.conversation_history.insert(insert_pos, message);
+        }
+    }
+
+    pub fn build_openai_messages(&self) -> Vec<Value> {
+        let mut items = Vec::new();
+
+        for message in &self.conversation_history {
+            match &message.role {
+                MessageRole::User => {
+                    items.push(json!({
+                        "role": "user",
+                        "content": message.content
+                    }));
+                }
+                MessageRole::Assistant => {
+                    items.push(json!({
+                        "role": "assistant",
+                        "content": message.content
+                    }));
+                }
+                MessageRole::System => {
+                    items.push(json!({
+                        "role": "system",
+                        "content": message.content
+                    }));
+                }
+                MessageRole::Tool { tool, .. } => {
+                    let metadata = message.metadata.as_ref();
+                    match metadata.and_then(|meta| meta.tool_message_kind.as_ref()) {
+                        Some(ToolMessageKind::Command) => {
+                            if let Some(call_id) =
+                                metadata.and_then(|meta| meta.tool_call_id.as_deref())
+                            {
+                                let arguments = metadata
+                                    .and_then(|meta| meta.tool_arguments.clone())
+                                    .unwrap_or_else(|| json!({}));
+                                items.push(json!({
+                                    "role": "assistant",
+                                    "content": message.content,
+                                    "tool_calls": [{
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool,
+                                            "arguments": arguments.to_string()
+                                        }
+                                    }]
+                                }));
+                            } else {
+                                items.push(json!({
+                                    "role": "assistant",
+                                    "content": message.content
+                                }));
+                            }
+                        }
+                        Some(ToolMessageKind::Output) => {
+                            if let Some(call_id) =
+                                metadata.and_then(|meta| meta.tool_call_id.as_deref())
+                            {
+                                items.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": message.content
+                                }));
+                            } else {
+                                items.push(json!({
+                                    "role": "assistant",
+                                    "content": message.content
+                                }));
+                            }
+                        }
+                        None => {
+                            items.push(json!({
+                                "role": "assistant",
+                                "content": message.content
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        items
     }
 
     pub fn get_relevant_context(&self, query: &str) -> Result<Vec<PathBuf>> {

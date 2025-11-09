@@ -47,7 +47,7 @@ impl Provider {
     name = "zarz",
     version,
     about = "ZarzCLI · AI-assisted code refactoring and rewrites",
-    author = "Fapzarz",
+    author = "zarzet",
     long_about = "ZarzCLI - Interactive AI coding assistant\n\nUsage:\n  zarz                      Start interactive chat\n  zarz --message \"prompt\"   Send a single prompt and exit\n  zarz ask \"question\"       Ask mode (legacy)\n  zarz chat                 Chat mode (legacy)"
 )]
 pub struct Cli {
@@ -156,6 +156,9 @@ pub struct ConfigArgs {
     /// Show current configuration.
     #[arg(long)]
     pub show: bool,
+    /// Authenticate with ChatGPT OAuth to fetch an OpenAI API key.
+    #[arg(long)]
+    pub login_chatgpt: bool,
 }
 
 #[derive(Debug, Clone, Args)]

@@ -52,3 +52,6 @@ temp/
 *.tmp
 *.bak
 nul
+
+# Reference repositories
+References/

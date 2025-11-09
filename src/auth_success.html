@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Signed into ZarzCLI</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #ffffff;
+        --text-primary: #0d0d0d;
+        --text-secondary: #5d5d5d;
+        --border-default: rgba(13, 13, 13, 0.1);
+        --interactive-bg-primary-default: #0d0d0d;
+        --interactive-label-primary-default: #ffffff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        min-height: 100vh;
+      }
+      .container {
+        height: 100%;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .inner-container {
+        display: flex;
+        flex-direction: column;
+        width: min(90%, 640px);
+        gap: 24px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-top: 15vh;
+      }
+      .logo {
+        width: 64px;
+        height: 64px;
+        border-radius: 20px;
+        border: 0.5px solid rgba(0, 0, 0, 0.1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+      }
+      .title {
+        color: var(--text-primary);
+        font-size: 32px;
+        font-weight: 500;
+      }
+      .subtitle {
+        color: var(--text-secondary);
+        font-size: 16px;
+        font-weight: 400;
+      }
+      .notice {
+        display: none;
+        padding: 16px 20px;
+        background: #ffffff;
+        box-shadow: 0px 4px 16px rgba(0, 0, 0, 0.05);
+        border-radius: 16px;
+        border: 1px solid var(--border-default);
+        gap: 16px;
+        align-items: center;
+      }
+      .notice-text {
+        flex: 1;
+      }
+      .notice-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+      .notice-description {
+        margin-top: 4px;
+        font-size: 14px;
+        color: var(--text-secondary);
+      }
+      .pill-button {
+        padding: 8px 16px;
+        background: var(--interactive-bg-primary-default);
+        border-radius: 999px;
+        color: var(--interactive-label-primary-default);
+        font-size: 14px;
+        font-weight: 500;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 140px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="inner-container">
+        <div class="header">
+          <div class="logo">
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" viewBox="0 0 32 32"><path stroke="#000" stroke-linecap="round" stroke-width="2.484" d="M22.356 19.797H17.17M9.662 12.29l1.979 3.576a.511.511 0 0 1-.005.504l-1.974 3.409M30.758 16c0 8.15-6.607 14.758-14.758 14.758-8.15 0-14.758-6.607-14.758-14.758C1.242 7.85 7.85 1.242 16 1.242c8.15 0 14.758 6.608 14.758 14.758Z"></path></svg>
+          </div>
+          <div>
+            <div class="title">Signed in to ZarzCLI</div>
+            <div class="subtitle">You can close this tab and return to your terminal.</div>
+          </div>
+        </div>
+        <div class="notice close-notice">
+          <div class="notice-text">
+            <div class="notice-title">All set!</div>
+            <div class="notice-description">ZarzCLI is now authenticated. Feel free to close this page.</div>
+          </div>
+          <a class="pill-button" href="#" onclick="window.close(); return false;">Close window</a>
+        </div>
+        <div class="notice setup-notice">
+          <div class="notice-text">
+            <div class="notice-title">Finish setting up your API organization</div>
+            <div class="notice-description">Add a payment method or complete setup for your workspace.</div>
+          </div>
+          <a class="pill-button redirect-button" href="#" target="_blank" rel="noreferrer">Redirecting…</a>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        const params = new URLSearchParams(window.location.search);
+        const needsSetup = params.get('needs_setup') === 'true';
+        const platformUrl = params.get('platform_url') || 'https://platform.openai.com';
+        const orgId = params.get('org_id');
+        const projectId = params.get('project_id');
+        const planType = params.get('plan_type');
+        const idToken = params.get('id_token');
+
+        const closeNotice = document.querySelector('.close-notice');
+        const setupNotice = document.querySelector('.setup-notice');
+
+        if (needsSetup) {
+          setupNotice.style.display = 'flex';
+          const redirectLink = document.querySelector('.redirect-button');
+          const redirectUrl = new URL('/org-setup', platformUrl);
+          redirectUrl.searchParams.set('p', planType || '');
+          redirectUrl.searchParams.set('t', idToken || '');
+          redirectUrl.searchParams.set('with_org', orgId || '');
+          redirectUrl.searchParams.set('project_id', projectId || '');
+          redirectLink.href = redirectUrl.toString();
+
+          let countdown = 3;
+          function tick() {
+            redirectLink.textContent = 'Redirecting in ' + countdown + 's…';
+            if (countdown === 0) {
+              window.location.replace(redirectUrl.toString());
+            } else {
+              countdown -= 1;
+              setTimeout(tick, 1000);
+            }
+          }
+          tick();
+        } else {
+          closeNotice.style.display = 'flex';
+        }
+      })();
+    </script>
+  </body>
+</html>
