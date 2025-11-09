@@ -22,6 +22,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
+use crossterm::style::{Color, Stylize};
 use dialoguer::Confirm;
 use providers::{CompletionProvider, CompletionRequest, ProviderClient, ReasoningEffort};
 use similar::{ChangeTag, TextDiff};
@@ -579,16 +580,15 @@ async fn handle_config(args: ConfigArgs) -> Result<()> {
         // Store API key if we got one
         if let Some(api_key) = api_key {
             config.openai_api_key = Some(api_key);
-            println!("\n[OK] Stored OAuth tokens and API key from ChatGPT login.");
-        } else {
-            println!("\n[OK] Stored OAuth tokens from ChatGPT login.");
-            println!("   (Using OAuth access token for API calls)");
         }
 
         config.save()?;
         auth::prepare_openai_environment(&mut config).await?;
-        println!("Saved credentials to {}", config::Config::config_path()?.display());
-        println!("\nYou can now use OpenAI models with: zarz");
+
+        println!("{}", "✓ Credentials saved successfully".with(Color::Green).bold());
+        println!("  → Config: {}", config::Config::config_path()?.display().to_string().with(Color::DarkGrey));
+        println!("\n{}", "Ready to use OpenAI models! Start with:".with(Color::Cyan));
+        println!("  {}", "zarz".with(Color::Yellow).bold());
         return Ok(());
     }
 

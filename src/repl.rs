@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor, Stylize};
 use crossterm::{cursor, terminal::{self, ClearType}, ExecutableCommand, QueueableCommand};
 use dialoguer::{theme::ColorfulTheme, Select};
 use rustyline::completion::{Completer, Pair};
@@ -414,7 +414,6 @@ impl Repl {
                 println!("API keys updated for this session.");
             }
             1 => {
-                println!("Opening browser for ChatGPT login...\n");
                 let auth::ChatGptLoginResult {
                     oauth_tokens,
                     api_key,
@@ -436,7 +435,7 @@ impl Repl {
 
                 self.config.save()?;
                 auth::prepare_openai_environment(&mut self.config).await?;
-                println!("OAuth credentials stored. Refreshing provider...");
+                println!("{}\n", "✓ Credentials saved and provider refreshed".with(Color::Green));
                 if let Err(err) = self.refresh_provider() {
                     eprintln!("Warning: Could not refresh provider: {err}");
                 }

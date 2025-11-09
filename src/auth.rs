@@ -3,6 +3,7 @@ use crate::config::{Config, OAuthTokens as StoredOAuthTokens};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
+use crossterm::style::{Color, Stylize};
 use rand::RngCore;
 use rand::thread_rng;
 use reqwest::Client;
@@ -38,7 +39,10 @@ pub struct ChatGptLoginResult {
 }
 
 pub async fn login_with_chatgpt() -> Result<ChatGptLoginResult> {
-    println!("[INFO] Starting ChatGPT OAuth login...");
+    println!("\n{}", "╭─────────────────────────────────────────────────────────╮".with(Color::Cyan));
+    println!("{}", "│  ChatGPT OAuth Authentication                          │".with(Color::Cyan));
+    println!("{}\n", "╰─────────────────────────────────────────────────────────╯".with(Color::Cyan));
+
     let pkce = generate_pkce();
     let state = generate_state();
     let mut callback_server = CallbackServer::start(state.clone())
@@ -48,13 +52,16 @@ pub async fn login_with_chatgpt() -> Result<ChatGptLoginResult> {
     let authorize_url = build_authorize_url(&redirect_uri, &pkce, &state);
 
     if webbrowser::open(&authorize_url).is_err() {
-        println!("Please open this URL in your browser to continue:\n{authorize_url}");
+        println!("{}", "⚡ Browser could not be opened automatically".with(Color::Yellow));
+        println!("{}", "Please open this URL in your browser:\n".with(Color::White));
+        println!("{}\n", authorize_url.with(Color::Blue).underlined());
     } else {
-        println!("A browser window was opened for authentication.");
-        println!("If it did not open, copy this URL:\n{authorize_url}");
+        println!("{}", "✓ Browser opened for authentication".with(Color::Green));
+        println!("{}", "\nIf the browser didn't open, use this URL:".with(Color::DarkGrey));
+        println!("{}\n", authorize_url.with(Color::Blue).underlined());
     }
 
-    println!("Waiting for authorization (timeout: {}s)...", LOGIN_TIMEOUT.as_secs());
+    println!("{}", format!("Waiting for authorization (timeout: {}s)...", LOGIN_TIMEOUT.as_secs()).with(Color::Cyan));
     let code = match tokio::time::timeout(LOGIN_TIMEOUT, callback_server.wait_for_code()).await {
         Ok(result) => result?,
         Err(_) => return Err(anyhow!("Timed out waiting for browser login.")),
@@ -69,11 +76,11 @@ pub async fn login_with_chatgpt() -> Result<ChatGptLoginResult> {
     // If it fails, we'll use OAuth access_token directly
     let api_key = obtain_api_key(&client, &tokens.id_token).await.ok();
 
-    println!("[INFO] ChatGPT OAuth login complete!");
+    println!("\n{}", "✓ Authentication successful!".with(Color::Green).bold());
     if api_key.is_some() {
-        println!("   API key issued. Stored alongside OAuth credentials.");
+        println!("{}", "  → API key issued and stored".with(Color::Green));
     } else {
-        println!("   Using OAuth access token directly (no API key issued).");
+        println!("{}", "  → Using OAuth access token".with(Color::Green));
     }
 
     let organization_id = extract_organization_id_from_token(&tokens.id_token);
