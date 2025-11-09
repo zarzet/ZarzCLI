@@ -12,10 +12,11 @@
 ### Core Capabilities
 - **Interactive Chat** - Real-time streaming responses with multiple AI models
 - **Multi-Provider Support** - Claude (Anthropic), GPT (OpenAI), and GLM (Z.AI)
-- **Bash Tool Calling** - AI can autonomously execute bash commands to understand your codebase
+- **Built-In Tools** - `read_file`, `list_dir`, `grep_files`, and `apply_patch` run natively
 - **File Operations** - Direct file editing, creation, and management
 - **Smart Context** - Automatic symbol search and relevant file detection
 - **MCP Support** - Model Context Protocol integration for extended capabilities
+- **ChatGPT OAuth (Codex backend)** - `/login` signs into ChatGPT Plus/Pro, tokens auto-refresh, and GPT‑5 presets call the same Codex endpoint as OpenAI’s CLI
 - **Auto Update** - Automatic update checks and notifications for new versions
 - **Cross-Platform** - Works seamlessly on Windows, Linux, and macOS
 
@@ -28,13 +29,26 @@ ZarzCLI v0.3.4+ includes autonomous bash tool execution, allowing AI models to:
 - **Navigate structure**: `ls -la src/` or `tree -L 2`
 - **Check git**: `git log --oneline -10` or `git diff`
 
-The AI automatically decides when to execute commands for better context - no manual `/run` needed!
-
 ### User Experience
 - **Status Line** - Shows current mode and notifications
 - **Double Ctrl+C** - Confirmation before exit (prevents accidental exits)
 - **Colored Diff Display** - Beautiful file change visualization with context
+- **Exploration Logs** - File reads, directory listings, and searches are summarized concisely (no more full file dumps unless requested)
 - **Persistent Sessions** - Resume previous conversations anytime
+
+### Built-In Tools
+ZarzCLI now has tool set:
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Reads files with optional line slices; stdout just shows a summary |
+| `list_dir` | Returns file/dir counts with a short preview instead of dumping everything |
+| `grep_files` | Greps inside a file (simple substring match) |
+| `apply_patch` | Applies Zarz-style `*** Begin Patch` diffs directly on disk |
+
+These tools run natively in Rust, so the terminal output is clean and the model still receives full context in the background.
+
+> **No more artificial tool-call limits** – ZarzCLI lets the agent keep digging until it’s satisfied. The old “Stopping tool execution after 3 calls” guardrails have been removed.
 
 ## Installation
 
@@ -101,6 +115,17 @@ zarz config --show     # Show current config
 zarz config --reset    # Reconfigure API keys
 zarz config --login-chatgpt  # Sign in via ChatGPT OAuth to fetch an OpenAI key
 ```
+
+### ChatGPT OAuth (Codex-compatible)
+
+When you run `zarz config --login-chatgpt` or `/login` → “Sign in with ChatGPT”, ZarzCLI mirrors the official Codex CLI flow:
+
+1. OpenAI’s OAuth screen appears (PKCE + `originator=zarz_cli`).
+2. After you approve, ZarzCLI shows the **“Signed in to ZarzCLI”** success page.
+3. The CLI stores the returned `access_token`, `refresh_token`, `id_token`, plus `project_id`, `organization_id`, and `chatgpt_account_id` in `~/.zarz/config.toml`.
+4. Before every run, ZarzCLI automatically refreshes the token if it’s near expiry and exports
+
+All GPT‑5 presets then hit the ChatGPT Codex backend (`OpenAI-Beta: responses=experimental`, `originator: codex_cli_rs`) with the official Codex instructions so behavior matches OpenAI’s CLI exactly.
 
 ## Available Commands
 
@@ -195,6 +220,16 @@ ZarzCLI automatically checks for updates on startup and notifies you when a new 
   - GLM Z.AI ([get key](https://z.ai/))
 
 > **Note**: Rust is **NOT required** for installation. Pre-built binaries are automatically downloaded for your platform (Windows, macOS, Linux).
+
+### References workspace
+
+Need to keep upstream repos (Codex, plugins, docs) handy? Drop them into `References/`:
+
+```bash
+git clone https://github.com/openai/codex References/codex-main
+```
+
+The folder is `.gitignore`d, so you can mirror large sources locally without polluting commits. ZarzCLI’s Codex instructions and login success page were generated from those references.
 
 ## Contributing
 
