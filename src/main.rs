@@ -113,7 +113,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        let tagline_lines = ["v0.3.5-Alpha", "Type /help for available commands, /exit to exit"];
+        let tagline_lines = ["v0.5.0-Alpha", "Type /help for available commands, /exit to exit"];
 
         for (index, line) in tagline_lines.iter().enumerate() {
             if index > 0 {
