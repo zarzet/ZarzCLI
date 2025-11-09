@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 use crate::providers::ReasoningEffort;
 
-/// OAuth tokens from ChatGPT login
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthTokens {
     pub access_token: String,
@@ -26,7 +25,6 @@ pub struct Config {
     pub glm_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_reasoning_effort: Option<ReasoningEffort>,
-    /// OAuth tokens from ChatGPT login (alternative to API key)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_oauth_tokens: Option<OAuthTokens>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,14 +36,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// Get the path to the config file (~/.zarz/config.toml)
     pub fn config_path() -> Result<PathBuf> {
         let home = dirs::home_dir()
             .context("Could not determine home directory")?;
         Ok(home.join(".zarz").join("config.toml"))
     }
 
-    /// Load config from file, or return default if file doesn't exist
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
 
@@ -62,7 +58,6 @@ impl Config {
         Ok(config)
     }
 
-    /// Save config to file
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
 
@@ -81,7 +76,6 @@ impl Config {
         Ok(())
     }
 
-    /// Check if at least one API key or OAuth token is configured
     pub fn has_api_key(&self) -> bool {
         self.anthropic_api_key.is_some()
             || self.openai_api_key.is_some()
@@ -89,12 +83,10 @@ impl Config {
             || self.glm_api_key.is_some()
     }
 
-    /// Check if OpenAI is configured (either API key or OAuth)
     pub fn has_openai_auth(&self) -> bool {
         self.openai_api_key.is_some() || self.openai_oauth_tokens.is_some()
     }
 
-    /// Interactive setup to get API keys from user
     pub fn interactive_setup() -> Result<Self> {
         let theme = ColorfulTheme::default();
 
@@ -207,21 +199,18 @@ impl Config {
         }
     }
 
-    /// Get Anthropic API key from config or environment
     pub fn get_anthropic_key(&self) -> Option<String> {
         std::env::var("ANTHROPIC_API_KEY")
             .ok()
             .or_else(|| self.anthropic_api_key.clone())
     }
 
-    /// Get OpenAI API key from config or environment
     pub fn get_openai_key(&self) -> Option<String> {
         std::env::var("OPENAI_API_KEY")
             .ok()
             .or_else(|| self.openai_api_key.clone())
     }
 
-    /// Get GLM API key from config or environment
     pub fn get_glm_key(&self) -> Option<String> {
         std::env::var("GLM_API_KEY")
             .ok()
@@ -232,8 +221,6 @@ impl Config {
         self.openai_reasoning_effort
     }
 
-    /// Get default provider based on available API keys
-    /// Priority: Anthropic > OpenAI (API key or OAuth) > GLM
     pub fn get_default_provider(&self) -> Option<crate::cli::Provider> {
         if self.get_anthropic_key().is_some() {
             Some(crate::cli::Provider::Anthropic)
@@ -246,7 +233,6 @@ impl Config {
         }
     }
 
-    /// Apply config to environment variables
     pub fn apply_to_env(&self) {
         if let Some(key) = &self.anthropic_api_key {
             if std::env::var("ANTHROPIC_API_KEY").is_err() {
@@ -297,7 +283,6 @@ impl Config {
         }
     }
 
-    /// Remove all stored API keys from disk
     pub fn clear_api_keys(&mut self) -> Result<bool> {
         let mut removed = false;
 

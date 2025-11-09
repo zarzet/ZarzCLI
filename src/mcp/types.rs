@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// MCP JSON-RPC request
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
@@ -12,7 +12,7 @@ pub struct JsonRpcRequest {
     pub params: Option<Value>,
 }
 
-/// MCP JSON-RPC response
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
@@ -23,7 +23,7 @@ pub struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
-/// MCP JSON-RPC error
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcError {
     pub code: i32,
@@ -32,7 +32,7 @@ pub struct JsonRpcError {
     pub data: Option<Value>,
 }
 
-/// MCP Tool definition
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     pub name: String,
@@ -41,7 +41,7 @@ pub struct McpTool {
     pub input_schema: Value,
 }
 
-/// MCP Resource definition
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct McpResource {
@@ -53,7 +53,7 @@ pub struct McpResource {
     pub mime_type: Option<String>,
 }
 
-/// MCP Prompt definition
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct McpPrompt {
@@ -73,7 +73,7 @@ pub struct PromptArgument {
     pub required: bool,
 }
 
-/// MCP Initialize result
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeResult {
     #[serde(rename = "protocolVersion")]
@@ -119,13 +119,13 @@ pub struct ServerInfo {
     pub version: String,
 }
 
-/// Tools list response
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsListResult {
     pub tools: Vec<McpTool>,
 }
 
-/// Tool call request
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct CallToolParams {
@@ -134,7 +134,7 @@ pub struct CallToolParams {
     pub arguments: Option<HashMap<String, Value>>,
 }
 
-/// Tool call result
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct CallToolResult {
@@ -155,14 +155,14 @@ pub enum ToolContent {
     Resource { resource: McpResource },
 }
 
-/// Resources list response
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct ResourcesListResult {
     pub resources: Vec<McpResource>,
 }
 
-/// Prompts list response
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct PromptsListResult {

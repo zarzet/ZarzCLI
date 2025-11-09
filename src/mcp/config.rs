@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-/// MCP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum McpServerConfig {
@@ -27,7 +26,6 @@ pub enum McpServerConfig {
     },
 }
 
-/// Root MCP configuration file structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpConfig {
     #[serde(rename = "mcpServers")]
@@ -35,14 +33,12 @@ pub struct McpConfig {
 }
 
 impl McpConfig {
-    /// Get the path to the MCP config file (~/.zarz/mcp.json)
     pub fn config_path() -> Result<PathBuf> {
         let home = dirs::home_dir()
             .context("Could not determine home directory")?;
         Ok(home.join(".zarz").join("mcp.json"))
     }
 
-    /// Load MCP config from file, or return default if file doesn't exist
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
 
@@ -59,7 +55,6 @@ impl McpConfig {
         Ok(config)
     }
 
-    /// Save MCP config to file
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
 
@@ -78,28 +73,23 @@ impl McpConfig {
         Ok(())
     }
 
-    /// Add a new MCP server
     pub fn add_server(&mut self, name: String, config: McpServerConfig) {
         self.mcp_servers.insert(name, config);
     }
 
-    /// Remove an MCP server
     pub fn remove_server(&mut self, name: &str) -> bool {
         self.mcp_servers.remove(name).is_some()
     }
 
-    /// Get an MCP server config by name
     pub fn get_server(&self, name: &str) -> Option<&McpServerConfig> {
         self.mcp_servers.get(name)
     }
 
-    /// List all configured servers
     #[allow(dead_code)]
     pub fn list_servers(&self) -> Vec<String> {
         self.mcp_servers.keys().cloned().collect()
     }
 
-    /// Check if config has any servers
     #[allow(dead_code)]
     pub fn has_servers(&self) -> bool {
         !self.mcp_servers.is_empty()
@@ -107,22 +97,18 @@ impl McpConfig {
 }
 
 impl McpServerConfig {
-    /// Create a new STDIO server config
     pub fn stdio(command: String, args: Option<Vec<String>>, env: Option<HashMap<String, String>>) -> Self {
         McpServerConfig::Stdio { command, args, env }
     }
 
-    /// Create a new HTTP server config
     pub fn http(url: String, headers: Option<HashMap<String, String>>) -> Self {
         McpServerConfig::Http { url, headers }
     }
 
-    /// Create a new SSE server config
     pub fn sse(url: String, headers: Option<HashMap<String, String>>) -> Self {
         McpServerConfig::Sse { url, headers }
     }
 
-    /// Get server type as string
     pub fn server_type(&self) -> &'static str {
         match self {
             McpServerConfig::Stdio { .. } => "stdio",

@@ -43,8 +43,8 @@ pub fn print_update_notification(new_version: &str) {
     println!("\n╭─────────────────────────────────────────────────────────╮");
     println!("│  Update Available!                                      │");
     println!("│                                                         │");
-    println!("│  Current version: {}                            │", CURRENT_VERSION);
-    println!("│  Latest version:  {}                            │", new_version);
+    println!("│  Current version: {}                           │", CURRENT_VERSION);
+    println!("│  Latest version:  {}                           │", new_version);
     println!("│                                                         │");
     println!("│  Run: npm update -g zarz                                │");
     println!("╰─────────────────────────────────────────────────────────╯\n");

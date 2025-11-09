@@ -10,7 +10,6 @@ use tokio::sync::Mutex;
 use super::config::McpServerConfig;
 use super::types::*;
 
-/// MCP Client for communicating with MCP servers
 pub struct McpClient {
     #[allow(dead_code)]
     name: String,
@@ -25,7 +24,6 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Create a new MCP client
     pub fn new(name: String, config: McpServerConfig) -> Self {
         Self {
             name,
@@ -40,7 +38,6 @@ impl McpClient {
         }
     }
 
-    /// Start the MCP server process (for STDIO servers)
     pub async fn start(&mut self) -> Result<()> {
         match &self.config {
             McpServerConfig::Stdio { command, args, env } => {
@@ -89,7 +86,6 @@ impl McpClient {
         }
     }
 
-    /// Initialize MCP connection
     async fn initialize(&mut self) -> Result<()> {
         let params = json!({
             "protocolVersion": "2024-11-05",
@@ -118,7 +114,6 @@ impl McpClient {
         Ok(())
     }
 
-    /// List available tools from the MCP server
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
         if !self.initialized {
             return Err(anyhow!("MCP client not initialized"));
@@ -131,7 +126,6 @@ impl McpClient {
         Ok(result.tools)
     }
 
-    /// Call a tool on the MCP server
     #[allow(dead_code)]
     pub async fn call_tool(&self, name: String, arguments: Option<HashMap<String, Value>>) -> Result<CallToolResult> {
         if !self.initialized {
@@ -148,7 +142,6 @@ impl McpClient {
         Ok(result)
     }
 
-    /// List available resources from the MCP server
     #[allow(dead_code)]
     pub async fn list_resources(&self) -> Result<Vec<McpResource>> {
         if !self.initialized {
@@ -162,7 +155,6 @@ impl McpClient {
         Ok(result.resources)
     }
 
-    /// List available prompts from the MCP server
     #[allow(dead_code)]
     pub async fn list_prompts(&self) -> Result<Vec<McpPrompt>> {
         if !self.initialized {
@@ -176,7 +168,6 @@ impl McpClient {
         Ok(result.prompts)
     }
 
-    /// Send a JSON-RPC request and wait for response
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
 
@@ -251,7 +242,6 @@ impl McpClient {
         }
     }
 
-    /// Send a JSON-RPC notification (no response expected)
     async fn send_notification(&self, method: &str, params: Option<Value>) -> Result<()> {
         let notification = json!({
             "jsonrpc": "2.0",
@@ -271,30 +261,25 @@ impl McpClient {
         Ok(())
     }
 
-    /// Get server info
     pub fn server_info(&self) -> Option<&ServerInfo> {
         self.server_info.as_ref()
     }
 
-    /// Get server capabilities
     #[allow(dead_code)]
     pub fn capabilities(&self) -> Option<&ServerCapabilities> {
         self.capabilities.as_ref()
     }
 
-    /// Check if client is initialized
     #[allow(dead_code)]
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
 
-    /// Get server name
     #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Stop the MCP server process
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(process) = &self.process {
             let mut process = process.lock().await;

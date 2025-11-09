@@ -34,6 +34,7 @@ config.toml
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
