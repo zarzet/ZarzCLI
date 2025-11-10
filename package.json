@@ -1,6 +1,6 @@
 {
   "name": "zarz",
-  "version": "0.5.0-alpha",
+  "version": "0.5.1-alpha",
   "description": "Fast AI coding assistant for terminal built with Rust",
   "main": "bin/zarz.js",
   "bin": {
@@ -41,7 +41,8 @@
   "files": [
     "bin/",
     "scripts/",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "dependencies": {},
   "devDependencies": {},
