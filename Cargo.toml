@@ -1,6 +1,6 @@
 [package]
 name = "zarzcli"
-version = "0.5.1-ALPHA"
+version = "0.5.1-alpha"
 edition = "2024"
 license = "MIT"
 authors = ["zarzet"]

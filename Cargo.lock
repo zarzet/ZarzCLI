@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "zarzcli"
-version = "0.5.1-ALPHA"
+version = "0.5.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",

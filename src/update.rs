@@ -32,7 +32,7 @@ pub async fn check_for_updates() -> Result<Option<String>> {
     let package_info: NpmPackageInfo = response.json().await?;
     let latest_version = package_info.dist_tags.latest;
 
-    if latest_version != CURRENT_VERSION && !latest_version.is_empty() {
+    if latest_version.to_lowercase() != CURRENT_VERSION.to_lowercase() && !latest_version.is_empty() {
         Ok(Some(latest_version))
     } else {
         Ok(None)
