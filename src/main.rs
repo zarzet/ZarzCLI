@@ -11,6 +11,7 @@ mod session;
 mod conversation_store;
 mod update;
 mod tools;
+pub mod unified_exec;
 
 use std::{
     collections::HashMap,

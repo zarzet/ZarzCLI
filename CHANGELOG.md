@@ -1,4 +1,7 @@
 # Changelog
+## 0.5.1-ALPHA
+
+- Introduced experimental unified-exec sessions (`exec_command` + `write_stdin`) so long-running shells stay alive and stream incremental output.
 
 ## 0.5.0-ALPHA
 

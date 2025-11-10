@@ -1,0 +1,7 @@
+Key changes:
+1. Added unified-exec manager using portable_pty (new `src/unified_exec.rs`).
+2. Added exec_command/write_stdin tool handlers (`src/tools/unified_exec.rs`) and integrated with the tool registry plus REPL logging.
+3. README & CHANGELOG now document unified exec feature; codex instructions restored.
+4. List_dir handler returns concise summaries; codex-style exploration logs for builtin tools.
+
+Tested: cargo fmt not run (cargo missing in env), functional behavior validated manually.

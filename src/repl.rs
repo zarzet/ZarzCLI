@@ -30,6 +30,7 @@ use crate::mcp::{McpManager, McpTool};
 use crate::providers::{CompletionProvider, CompletionRequest, ProviderClient, ReasoningEffort, ToolCall};
 use crate::session::{MessageMetadata, MessageRole, Session};
 use crate::tools::{ToolExecutionContext, ToolRegistry};
+use crate::unified_exec::UnifiedExecManager;
 use serde_json::{self, json, Value};
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
@@ -268,6 +269,7 @@ pub struct Repl {
     current_mode: String,
     status_message: Option<String>,
     tool_registry: ToolRegistry,
+    unified_exec: Arc<UnifiedExecManager>,
 }
 
 impl Repl {
@@ -558,6 +560,7 @@ impl Repl {
         mcp_manager: Option<std::sync::Arc<McpManager>>,
         config: Config,
     ) -> Self {
+        let unified_exec = UnifiedExecManager::new();
         Self {
             session: Session::new(working_dir),
             provider,
@@ -574,7 +577,8 @@ impl Repl {
             last_interrupt: None,
             current_mode: "Auto".to_string(),
             status_message: None,
-            tool_registry: ToolRegistry::new(),
+            tool_registry: ToolRegistry::new(unified_exec.clone()),
+            unified_exec,
         }
     }
 
@@ -1469,6 +1473,7 @@ impl Repl {
 
         let ctx = ToolExecutionContext {
             working_directory: &self.session.working_directory,
+            unified_exec: Some(&self.unified_exec),
         };
 
         let execution = self
@@ -2540,6 +2545,23 @@ fn summarize_builtin_tool_action(tool_name: &str, input: &Value) -> Option<Vec<S
             ])
         }
         "apply_patch" => Some(vec!["• Explored".to_string(), "  └ Apply patch".to_string()]),
+        "exec_command" => {
+            let cmd = input.get("cmd").and_then(|v| v.as_str()).unwrap_or("<cmd>");
+            Some(vec![
+                "• Explored".to_string(),
+                format!("  └ Run exec_command: {}", cmd),
+            ])
+        }
+        "write_stdin" => {
+            let session_id = input
+                .get("session_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            Some(vec![
+                "• Explored".to_string(),
+                format!("  └ Send input to session {}", session_id),
+            ])
+        }
         _ => None,
     }
 }

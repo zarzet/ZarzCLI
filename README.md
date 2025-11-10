@@ -13,6 +13,7 @@
 - **Interactive Chat** - Real-time streaming responses with multiple AI models
 - **Multi-Provider Support** - Claude (Anthropic), GPT (OpenAI), and GLM (Z.AI)
 - **Built-In Tools** - `read_file`, `list_dir`, `grep_files`, and `apply_patch` run natively
+- **Unified Exec Sessions** - `exec_command`/`write_stdin` keep long-running shells alive with clean logs
 - **File Operations** - Direct file editing, creation, and management
 - **Smart Context** - Automatic symbol search and relevant file detection
 - **MCP Support** - Model Context Protocol integration for extended capabilities
@@ -45,10 +46,9 @@ ZarzCLI now has tool set:
 | `list_dir` | Returns file/dir counts with a short preview instead of dumping everything |
 | `grep_files` | Greps inside a file (simple substring match) |
 | `apply_patch` | Applies Zarz-style `*** Begin Patch` diffs directly on disk |
+| `exec_command` / `write_stdin` | Spawn interactive shells, stream output chunks, and continue sessions |
 
 These tools run natively in Rust, so the terminal output is clean and the model still receives full context in the background.
-
-> **No more artificial tool-call limits** – ZarzCLI lets the agent keep digging until it’s satisfied. The old “Stopping tool execution after 3 calls” guardrails have been removed.
 
 ## Installation
 
