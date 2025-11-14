@@ -34,7 +34,7 @@ use crate::repl::Repl;
 
 // Model constants - Latest models as of 2025
 const DEFAULT_MODEL_ANTHROPIC: &str = "claude-sonnet-4-5-20250929";
-const DEFAULT_MODEL_OPENAI: &str = "gpt-5-codex";
+const DEFAULT_MODEL_OPENAI: &str = "gpt-5.1-codex";
 const DEFAULT_MODEL_GLM: &str = "glm-4.6";
 
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are ZarzCLI, an AI coding assistant for the terminal.

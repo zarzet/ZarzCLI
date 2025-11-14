@@ -41,6 +41,12 @@ struct CommandInfo {
     description: &'static str,
 }
 
+struct OpenAiOauthModel {
+    name: &'static str,
+    description: &'static str,
+    reasoning_levels: &'static [(&'static str, &'static str)],
+}
+
 const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "help", description: "Show this help message" },
     CommandInfo { name: "apply", description: "Apply pending file changes" },
@@ -59,17 +65,57 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "exit", description: "Exit the session" },
 ];
 
-const OPENAI_OAUTH_MODELS: &[(&str, &str)] = &[
-    ("gpt-5-codex", "Optimized for coding (default)"),
-    ("gpt-5-codex-low", "Lower reasoning effort; cheaper via OAuth"),
-    ("gpt-5-codex-medium", "Balanced reasoning depth"),
-    ("gpt-5-codex-high", "High reasoning effort with detailed summaries"),
-    ("gpt-5-minimal", "Strictly minimal reasoning, low verbosity"),
-    ("gpt-5-low", "Low effort general GPT-5 variant"),
-    ("gpt-5-medium", "Balanced GPT-5 variant"),
-    ("gpt-5-high", "High reasoning effort GPT-5"),
-    ("gpt-5-mini", "Lightweight GPT-5 for quick tasks"),
-    ("gpt-5-nano", "Fastest GPT-5 option with minimal reasoning"),
+const OPENAI_OAUTH_MODELS: &[OpenAiOauthModel] = &[
+    OpenAiOauthModel {
+        name: "gpt-5.1-codex",
+        description: "Optimized for Codex. Balance of reasoning quality and coding ability.",
+        reasoning_levels: &[
+            (
+                "Low (non-thinking)",
+                "Fastest responses with limited reasoning for quick fix-ups.",
+            ),
+            (
+                "Medium",
+                "Dynamically adjusts reasoning depth based on each coding task.",
+            ),
+            (
+                "High (thinking)",
+                "Maximizes reasoning depth for complex or ambiguous problems.",
+            ),
+        ],
+    },
+    OpenAiOauthModel {
+        name: "gpt-5.1-codex-mini",
+        description: "Optimized for Codex. Cheaper, faster, but less capable.",
+        reasoning_levels: &[
+            (
+                "Medium",
+                "Balanced reasoning for day-to-day refactors without extra cost.",
+            ),
+            (
+                "High (thinking)",
+                "Pushes the mini model to reason harder when needed.",
+            ),
+        ],
+    },
+    OpenAiOauthModel {
+        name: "gpt-5.1",
+        description: "Broad world knowledge with strong general reasoning.",
+        reasoning_levels: &[
+            (
+                "Low (non-thinking)",
+                "Balances speed with some reasoning; great for concise answers.",
+            ),
+            (
+                "Medium (non-thinking)",
+                "Provides a solid balance of reasoning depth and latency.",
+            ),
+            (
+                "High (thinking)",
+                "Reveals more internal thinking for deep architectural questions.",
+            ),
+        ],
+    },
 ];
 
 #[derive(Clone, Default)]
@@ -1583,7 +1629,7 @@ impl Repl {
         println!("  /files          - List loaded files");
         println!("  /model <name>   - Switch to a different AI model");
         println!("                    Examples: claude-sonnet-4-5-20250929, claude-haiku-4-5,");
-        println!("                              gpt-5-codex-high, gpt-5-mini, glm-4.6");
+        println!("                              gpt-5.1-codex, gpt-5.1, glm-4.6");
         println!("  /mcp            - Show MCP servers and available tools");
         println!("  /resume         - Resume a previous chat session");
         println!("  /clear          - Clear conversation history");
@@ -1907,8 +1953,11 @@ impl Repl {
             println!("    claude-sonnet-4                  - General purpose");
             println!();
             println!("  OpenAI (ChatGPT OAuth-ready):");
-            for (model, blurb) in OPENAI_OAUTH_MODELS {
-                println!("    {:<32} - {}", model, blurb);
+            for info in OPENAI_OAUTH_MODELS {
+                println!("    {:<32} - {}", info.name, info.description);
+                for &(label, detail) in info.reasoning_levels {
+                    println!("        - {:<18} {}", label, detail);
+                }
             }
             println!();
             println!("  GLM (Z.AI - International):");
@@ -2883,6 +2932,10 @@ fn get_model_display_name(model: &str) -> String {
         "Opus".to_string()
     } else if model.contains("haiku") {
         "Haiku".to_string()
+    } else if model.starts_with("gpt-5.1-codex") {
+        "GPT-5.1 Codex".to_string()
+    } else if model.starts_with("gpt-5.1") {
+        "GPT-5.1".to_string()
     } else if model.starts_with("gpt-5-codex") {
         "GPT-5 Codex".to_string()
     } else if model.starts_with("glm-4.6") {

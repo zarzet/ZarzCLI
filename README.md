@@ -157,19 +157,19 @@ Best for coding tasks and autonomous agents:
 - `claude-opus-4-1` (Most powerful)
 
 ### OpenAI GPT (ChatGPT OAuth)
-Run `zarz config --login-chatgpt` to fetch an OpenAI key, then choose any of these GPT‑5 variants optimized for OAuth access:
-- `gpt-5-codex` – Default coding agent
-- `gpt-5-codex-low` – Lower reasoning effort
-- `gpt-5-codex-medium` – Balanced reasoning depth
-- `gpt-5-codex-high` – High reasoning effort with detailed summaries
-- `gpt-5-minimal` – Minimal reasoning, terse responses
-- `gpt-5-low` – Low-effort general GPT-5
-- `gpt-5-medium` – Balanced GPT-5 experience
-- `gpt-5-high` – High reasoning-effort GPT-5
-- `gpt-5-mini` – Lightweight GPT-5 for quick tasks
-- `gpt-5-nano` – Fastest GPT-5 tier with minimal reasoning
+Run `zarz config --login-chatgpt` to fetch an OpenAI key, then choose from the GPT‑5.1 lineup:
+- `gpt-5.1-codex` – Optimized for Codex. Balance of reasoning depth and coding ability.
+  - Low (non-thinking) – Fastest responses with limited reasoning traces.
+  - Medium – Dynamically adjusts reasoning based on the task.
+  - High (thinking) – Maximizes reasoning depth for complex fixes.
+- `gpt-5.1-codex-mini` – Cheaper/faster Codex tier.
+  - Medium – Balanced reasoning for everyday refactors.
+  - High (thinking) – Push the mini model when you still need more depth.
+- `gpt-5.1` – Broad world knowledge with strong general reasoning.
+  - Low / Medium (non-thinking) – Concise answers when you want less deliberation.
+  - High (thinking) – Streams more internal thinking for architecture or research prompts.
 
-When you run `/model gpt-5-*`, ZarzCLI now prompts you to pick a **reasoning effort** (Auto, Minimal, Low, Medium, High). The choice is saved to `~/.zarz/config.toml` and applied to every Responses API call along with `text.verbosity = "medium"` and `include = ["reasoning.encrypted_content"]`, matching the Codex OAuth defaults.
+When you run `/model gpt-5.1*`, ZarzCLI prompts you to pick a **reasoning effort** (Auto, Low, Medium, High). The choice is saved to `~/.zarz/config.toml` and applied to every Responses API call along with `text.verbosity = "medium"` and `include = ["reasoning.encrypted_content"]`, matching the Codex OAuth defaults and the presets documented in `References/codex-main`.
 
 ### GLM (Z.AI)
 Cost-effective coding with 200K context window:
